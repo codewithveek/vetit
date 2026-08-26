@@ -1,0 +1,26 @@
+{
+  "name": "vetit-mcp",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Review an MCP server before you trust it: inspect its manifest, test how its tools behave, and write a least-privilege permission list.",
+  "license": "MIT",
+  "keywords": ["mcp", "security", "tool-poisoning", "prompt-injection", "trueforge"],
+  "repository": { "type": "git", "url": "git+https://github.com/codewithveek/vetit.git", "directory": "packages/vetit-mcp" },
+  "engines": { "node": ">=22.5.0" },
+  "bin": { "vetit-mcp": "./dist/index.js" },
+  "main": "./dist/index.js",
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.2",
+    "ulid": "^2.3.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21"
+  }
+}
