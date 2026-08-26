@@ -1,0 +1,143 @@
+import { computeRisk, type Finding } from '../detection/index.js';
+import type { ManifestTool, StoredManifest } from '../manifest/index.js';
+import type {
+  AdmissionDecision,
+  ScopedGrant,
+  ToolDisposition,
+} from './admission.types.js';
+
+/**
+ * Turning findings into a permission list.
+ *
+ * Pure: manifest and findings in, grant out. No network, no clock — so the
+ * same review always proposes the same grant, and a human comparing two runs
+ * is comparing the servers rather than the weather.
+ *
+ * The rules, in order, and each one is a claim someone can argue with:
+ *
+ *  1. a critical finding disables the tool. Critical means an instruction
+ *     aimed at the model, a hidden character, or a reference to somebody
+ *     else's tools. None of those has an innocent reading.
+ *  2. a high finding puts the tool behind approval. High means suspicious,
+ *     not proven, and a human looking at one call is the right resolution.
+ *  3. a tool that writes goes behind approval whatever its findings, because
+ *     the cost of being wrong about a write is not the cost of being wrong
+ *     about a read.
+ *  4. a tool that declares nothing counts as a write, per §7.
+ *  5. everything else is enabled.
+ */
+
+const CRITICAL_SEVERITIES: ReadonlySet<string> = new Set(['critical']);
+const APPROVAL_SEVERITIES: ReadonlySet<string> = new Set(['high']);
+
+function isDeclaredWrite(tool: ManifestTool): boolean {
+  const annotations = tool.annotations;
+  if (annotations?.destructiveHint === true) return true;
+  // Silence is a write. See check_annotations for why this is not pedantry.
+  return annotations?.readOnlyHint !== true;
+}
+
+interface ToolVerdict {
+  readonly disposition: ToolDisposition;
+  readonly reason: string | undefined;
+}
+
+function summarise(finding: Finding): string {
+  return `${finding.id} — ${finding.message}`;
+}
+
+function decideForTool(tool: ManifestTool, findings: readonly Finding[]): ToolVerdict {
+  const critical = findings.find((finding) => CRITICAL_SEVERITIES.has(finding.severity));
+  if (critical !== undefined) {
+    return { disposition: 'disabled', reason: summarise(critical) };
+  }
+  const high = findings.find((finding) => APPROVAL_SEVERITIES.has(finding.severity));
+  if (high !== undefined) {
+    return { disposition: 'requires_approval', reason: summarise(high) };
+  }
+  if (isDeclaredWrite(tool)) {
+    const annotationFinding = findings.find((finding) => finding.detector === 'D-08');
+    return {
+      disposition: 'requires_approval',
+      reason:
+        annotationFinding === undefined
+          ? 'Declares itself a write. Gated by name, not by label — this ' +
+            'review does not rely on a server’s own annotations.'
+          : summarise(annotationFinding),
+    };
+  }
+  return { disposition: 'enabled', reason: undefined };
+}
+
+function decideForServer(findings: readonly Finding[]): AdmissionDecision {
+  const band = computeRisk(findings).band;
+  switch (band) {
+    case 'reject_recommended': {
+      return 'reject';
+    }
+    case 'admit_full_eligible': {
+      return 'admit_full';
+    }
+    case 'admit_reduced': {
+      return 'admit_reduced';
+    }
+  }
+}
+
+export interface BuildGrantOptions {
+  readonly connectorName: string;
+  readonly manifest: StoredManifest;
+  readonly findings: readonly Finding[];
+  /** What the review could not check. Recorded, never inferred as a pass. */
+  readonly notCovered: readonly string[];
+}
+
+interface GroupedTools {
+  readonly enabled: string[];
+  readonly disabled: string[];
+  readonly requiresApproval: string[];
+  readonly why: Record<string, string>;
+}
+
+function groupTools(options: BuildGrantOptions): GroupedTools {
+  const grouped: GroupedTools = {
+    enabled: [],
+    disabled: [],
+    requiresApproval: [],
+    why: {},
+  };
+  for (const tool of options.manifest.tools) {
+    const forTool = options.findings.filter((finding) => finding.tool === tool.name);
+    const verdict = decideForTool(tool, forTool);
+    if (verdict.reason !== undefined) grouped.why[tool.name] = verdict.reason;
+    if (verdict.disposition === 'disabled') grouped.disabled.push(tool.name);
+    else if (verdict.disposition === 'requires_approval') {
+      grouped.requiresApproval.push(tool.name);
+    } else grouped.enabled.push(tool.name);
+  }
+  return grouped;
+}
+
+/**
+ * A rejected server keeps `disable_tools: ["@all"]`.
+ *
+ * Not `enable_tools: []` — when `enable_tools` is absent it falls back to
+ * `["@all"]`, and `disable_tools` is subtracted from whatever is enabled, so
+ * disabling everything is the only phrasing that leaves no room for doubt
+ * (spec §6).
+ */
+export function buildScopedGrant(options: BuildGrantOptions): ScopedGrant {
+  const decision = decideForServer(options.findings);
+  const grouped = groupTools(options);
+  const isRejected = decision === 'reject';
+  return {
+    name: options.connectorName,
+    decision,
+    enable_tools: isRejected ? [] : grouped.enabled,
+    disable_tools: isRejected ? ['@all'] : grouped.disabled,
+    require_approval_for_tools: isRejected ? [] : grouped.requiresApproval,
+    preload: false,
+    why: grouped.why,
+    not_covered: options.notCovered,
+  };
+}

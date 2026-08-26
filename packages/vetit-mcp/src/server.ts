@@ -1,5 +1,6 @@
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { registerAdmissionTools } from './features/admission/index.js';
 import { registerDetectionTools } from './features/detection/index.js';
 import { registerManifestTools } from './features/manifest/index.js';
 import { StatelessHttpTransport } from './shared/mcp-client/stateless-http-transport.js';
@@ -24,6 +25,7 @@ export function createVetitMcpServer(): McpServer {
   const server = new McpServer(SERVER_IDENTITY);
   registerManifestTools(server);
   registerDetectionTools(server);
+  registerAdmissionTools(server);
   return server;
 }
 

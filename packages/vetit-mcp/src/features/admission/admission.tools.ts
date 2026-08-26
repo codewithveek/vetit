@@ -1,0 +1,140 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+import { readStoredFindings } from '../detection/index.js';
+import { readStoredManifest } from '../manifest/index.js';
+import { buildGuardedToolResult } from '../../shared/redaction/index.js';
+import {
+  registerQuarantinedServer,
+  writeConnectorPermissions,
+} from '../../shared/trueforge-client/index.js';
+import { buildScopedGrant } from './build-grant.js';
+
+/**
+ * The two tools that change something, and the two that therefore pause.
+ *
+ * `quarantine_server` and `write_admission` are annotated honestly as writes.
+ * The agent spec gates them by literal tool name rather than by the `@write`
+ * group, on purpose: a project about servers that lie in their labels must not
+ * depend on labels for its own approval settings.
+ */
+
+const authSchema = z
+  .unknown()
+  .optional()
+  .describe(
+    'Auth block passed straight to the harness and never read back. Use a ' +
+      'throwaway credential with the smallest access that works.',
+  );
+
+function registerQuarantine(server: McpServer): void {
+  server.registerTool(
+    'quarantine_server',
+    {
+      title: 'Quarantine server',
+      description:
+        'Stage 1: registers a target as a TrueForge connector with every tool ' +
+        'switched off. The harness stores the credential; Vetit never sees it. ' +
+        'Every server lands here first.',
+      inputSchema: {
+        url: z.string().url().describe('Streamable HTTP endpoint of the target.'),
+        name: z.string().describe('Connector name to register it under.'),
+        auth: authSchema,
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ url, name, auth }) => {
+      const record = await registerQuarantinedServer({
+        name,
+        url,
+        ...(auth === undefined ? {} : { auth }),
+      });
+      return buildGuardedToolResult({
+        connector: record.name,
+        status: 'on_hold',
+        disable_tools: ['@all'],
+        note:
+          'Registered with disable_tools ["@all"], not enable_tools []. An ' +
+          'absent enable_tools falls back to ["@all"], and disable_tools is ' +
+          'subtracted from whatever is enabled, so this phrasing is the only ' +
+          'one that leaves nothing callable.',
+      });
+    },
+  );
+}
+
+const admissionInput = {
+  manifest_id: z.string().describe('Manifest the decision is based on.'),
+  connector_name: z.string().describe('Connector to write the permission list to.'),
+  not_covered: z
+    .array(z.string())
+    .default([])
+    .describe(
+      'What the review could not check — for example behavioural ' +
+        'verification when no credential was supplied. Recorded on the grant.',
+    ),
+  apply: z
+    .boolean()
+    .default(false)
+    .describe(
+      'False proposes the grant without writing it. True writes it to the ' +
+        'connector, which is what actually lets the server out of quarantine.',
+    ),
+};
+
+function registerWriteAdmission(server: McpServer): void {
+  server.registerTool(
+    'write_admission',
+    {
+      title: 'Write admission',
+      description:
+        'Stage 3: builds the least-privilege permission list from the ' +
+        'recorded findings and, when apply is true, writes it to the ' +
+        'connector. Every restriction cites the finding that caused it.',
+      inputSchema: admissionInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ manifest_id, connector_name, not_covered, apply }) => {
+      const manifest = await readStoredManifest(manifest_id);
+      const findings = await readStoredFindings(manifest_id);
+      const grant = buildScopedGrant({
+        connectorName: connector_name,
+        manifest,
+        findings,
+        notCovered: not_covered,
+      });
+      if (!apply) {
+        return buildGuardedToolResult({
+          applied: false,
+          grant,
+          note: 'Proposed only. Call again with apply true to write it.',
+        });
+      }
+      const record = await writeConnectorPermissions({
+        name: grant.name,
+        enableTools: grant.enable_tools,
+        disableTools: grant.disable_tools,
+        requireApprovalForTools: grant.require_approval_for_tools,
+      });
+      return buildGuardedToolResult({
+        applied: true,
+        connector: record.name,
+        grant,
+      });
+    },
+  );
+}
+
+export function registerAdmissionTools(server: McpServer): void {
+  registerQuarantine(server);
+  registerWriteAdmission(server);
+}
