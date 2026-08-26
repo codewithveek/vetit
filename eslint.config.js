@@ -8,10 +8,9 @@ export default tseslint.config(
   {
     ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '**/*.d.ts'],
   },
-  js.configs.recommended,
-  ...tseslint.configs.strictTypeChecked,
   {
     files: ['**/*.ts'],
+    extends: [js.configs.recommended, ...tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -72,7 +71,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/*.config.ts', '**/*.config.js', 'eslint.config.js'],
+    files: ['**/*.config.ts'],
     rules: { 'import/no-default-export': 'off' },
+  },
+  {
+    // Config files are plain JavaScript and sit outside the typed project.
+    files: ['**/*.js'],
+    extends: [js.configs.recommended, tseslint.configs.disableTypeChecked],
+    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
   },
 );
