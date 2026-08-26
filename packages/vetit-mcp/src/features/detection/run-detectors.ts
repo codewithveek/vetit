@@ -26,6 +26,8 @@ export interface RunDetectorsOptions {
    * Required, with no default, on purpose — see `runDetectors`.
    */
   readonly installedToolNames: readonly string[];
+  /** Run only these detectors. Omit to run all ten. */
+  readonly detectorIds?: readonly string[];
 }
 
 /** Which field of the tool each detector is handed. */
@@ -70,8 +72,20 @@ export interface DetectionRun {
   readonly findings: readonly Finding[];
 }
 
+function selectDetectors(
+  detectorIds: readonly string[] | undefined,
+): readonly DetectorDefinition[] {
+  if (detectorIds === undefined) return DETECTORS;
+  const wanted = new Set(detectorIds);
+  return DETECTORS.filter((definition) => wanted.has(definition.id));
+}
+
 /**
- * Every tool, every detector, in a fixed order.
+ * Every tool, every selected detector, in a fixed order.
+ *
+ * A subset is not a different pipeline: `scan_descriptions` and
+ * `analyze_schemas` are the same run with a different selection, so a finding
+ * reads identically whichever tool produced it.
  *
  * `installedToolNames` has no default. There were two functions here — one
  * that took a workspace list and one that quietly supplied an empty one — and
@@ -93,6 +107,7 @@ export interface DetectionRun {
  * rather than one the runner made on their behalf.
  */
 export function runDetectors(options: RunDetectorsOptions): DetectionRun {
+  const detectors = selectDetectors(options.detectorIds);
   const drafts: DraftFinding[] = [];
   options.manifest.tools.forEach((tool, toolIndex) => {
     drafts.push(
@@ -103,7 +118,7 @@ export function runDetectors(options: RunDetectorsOptions): DetectionRun {
           manifestPath: options.manifestPath,
           installedToolNames: options.installedToolNames,
         },
-        DETECTORS,
+        detectors,
       ),
     );
   });

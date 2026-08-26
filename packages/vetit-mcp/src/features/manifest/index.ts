@@ -1,3 +1,4 @@
+export { registerManifestTools } from './manifest.tools.js';
 export {
   fetchManifest,
   ManifestSourceError,

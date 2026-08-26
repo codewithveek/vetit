@@ -1,4 +1,8 @@
 export {
+  buildGuardedToolResult,
+  guardToolPayload,
+} from './guard-tool-output.js';
+export {
   cleanEmptySnippet,
   cleanUntrustedSnippet,
   type CleanSnippetOptions,
