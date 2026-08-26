@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerAdmissionTools } from './features/admission/index.js';
 import { registerDetectionTools } from './features/detection/index.js';
 import { registerManifestTools } from './features/manifest/index.js';
+import { registerProbingTools } from './features/probing/index.js';
 import { StatelessHttpTransport } from './shared/mcp-client/stateless-http-transport.js';
 
 /**
@@ -26,6 +27,7 @@ export function createVetitMcpServer(): McpServer {
   registerManifestTools(server);
   registerDetectionTools(server);
   registerAdmissionTools(server);
+  registerProbingTools(server);
   return server;
 }
 
