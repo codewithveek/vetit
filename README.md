@@ -126,11 +126,11 @@ npx vetit-decoy-mcp --poison        # the same target after a rug pull
 
 | Tool | Label | What it does |
 | ---- | ----- | ------------ |
-| `fetch_manifest` | read | Lists everything a target offers, writes it to disk, returns counts and hashes only |
-| `scan_descriptions` | read | Runs the description and name detectors (D-01…D-06, D-10) |
-| `analyze_schemas` | read | Finds free-text parameters built for moving data out (D-07) |
-| `check_annotations` | read | Reports what each tool declares, and treats silence as a write (D-08) |
-| `check_shadowing` | read | Finds descriptions naming other servers' tools (D-09) |
+| `fetch_manifest` | **write** | Lists everything a target offers, writes it to disk, returns counts and hashes only |
+| `scan_descriptions` | **write** | Runs the description and name detectors (D-01…D-06, D-10). Records them |
+| `analyze_schemas` | **write** | Finds free-text parameters built for moving data out (D-07). Records them |
+| `check_annotations` | **write** | Reports what each tool declares, and treats silence as a write (D-08). Records them |
+| `check_shadowing` | **write** | Finds descriptions naming other servers' tools (D-09). Records them |
 | `compute_risk` | read | Adds up the stored findings. Arithmetic, no model |
 | `lookup_advisories` | read | Returns searches to run with `exa`. Never an advisory it made up |
 | `probe_tool` | **destructive** | Calls one tool for real and compares behaviour with claims |
@@ -236,6 +236,14 @@ run, and the gap is reported as **what was not covered, never as a pass**.
   short and contain no instructions, its annotations are honest and tested, and
   you can run it against itself. That is the same answer we would accept from
   anybody else, which is why we are not asking for more.
+
+  Worth admitting how that went. Five of these tools were annotated
+  `readOnlyHint: true` while writing files to disk, and a test asserting "every
+  one of its own tools is honest" encoded the mistake rather than catching it.
+  Code review found it. The labels are corrected and the table above is the
+  corrected version — but the honest lesson is that getting your own
+  annotations right is harder than it sounds, which is rather the point of the
+  whole project.
 - **A read-back needs a read-only tool to exist.** Where a target has none, a
   write can happen unobserved. The probe says so rather than reporting a clean
   result.
@@ -320,7 +328,7 @@ the trail runs through the build rather than being bolted on at the end.
 | `feat/redaction` | Cleaning untrusted text before it can reach the agent |
 | `feat/manifest` | Listing a target and hashing what matters |
 | `feat/detection` | D-01 to D-10 and the risk score |
-| `feat/review-tools` | The Vetit server and its seven read tools |
+| `feat/review-tools` | The Vetit server and its seven review tools |
 | `feat/admission` | Quarantine, scoped grant, `write_admission` |
 | `feat/probing` | `probe_tool` and the tripwire |
 | `feat/agent-and-skill` | Agent manifest, review playbook, setup script |
