@@ -100,10 +100,12 @@ observes which writer's state. Vetit used to pick one automatically, which
 meant a reader whose output naturally varies could invent a change, and an
 unrelated stable one could hide a real write behind an unchanged string — so
 the strongest claim in the project rested on a guess. Naming it is an
-assertion a human can make and Vetit cannot. Without one, the probe reports
-`P-05` at medium — *the response talks as though it wrote, and nothing
-confirmed it* — which is the honest ceiling on what an unassisted probe can
-say.
+assertion a human can make and Vetit cannot. Without one, the most a probe
+can say is `P-05` at medium — *the response talks as though it wrote, and
+nothing confirmed it* — and it only says that much when the response uses the
+language of having changed something. A quiet response with no reader
+nominated produces no finding at all, which is a gap to record rather than a
+tool cleared.
 
 ---
 
@@ -115,8 +117,8 @@ Requires **Node 22.5 or later**.
 git clone https://github.com/codewithveek/vetit
 cd vetit
 npm install
-npm test            # 241 tests, including end-to-end against the decoy
-./scripts/setup.sh  # builds, starts both servers, creates the agent
+npm test            # 467 tests, including end-to-end against the decoy
+./scripts/setup.sh  # builds, starts both servers, registers the skill, creates the agent
 ```
 
 `setup.sh` degrades cleanly if you have no TrueForge instance running — the
