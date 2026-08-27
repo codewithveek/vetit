@@ -1,7 +1,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { ensureWorkdirSubdirectory } from '../../shared/workdir/index.js';
+import { assertManifestId, InvalidManifestIdError } from '../manifest/index.js';
 import type { Finding } from './finding.types.js';
 
 /**
@@ -38,17 +39,42 @@ const findingsFileSchema = z.object({
   findings: z.array(findingSchema),
 });
 
+/**
+ * The same guard the manifest store uses, for the same reason.
+ *
+ * Findings are keyed by manifest id, and this path was built by interpolating
+ * that id straight into a filename — so a traversing id could read or
+ * overwrite a `.findings.json` file anywhere the process could reach. The
+ * check is imported rather than copied so the two stores cannot drift into
+ * disagreeing about what an id is.
+ */
 async function resolveFindingsPath(manifestId: string): Promise<string> {
+  assertManifestId(manifestId);
   const directory = await ensureWorkdirSubdirectory('reports');
-  return join(directory, `${manifestId}.findings.json`);
+  const path = resolve(join(directory, `${manifestId}.findings.json`));
+  if (dirname(path) !== resolve(directory)) {
+    throw new InvalidManifestIdError(manifestId);
+  }
+  return path;
 }
 
+/**
+ * No findings recorded yet is a normal state — a manifest that has been
+ * fetched but not scanned has none — so a missing file reads as an empty list.
+ *
+ * A refused identifier does not. Catching that here would turn "this id is not
+ * an id" into "this manifest has no findings", which is the same shape of bug
+ * as recording a failed listing as an absence: it reads as a clean result for
+ * a question nobody actually answered.
+ */
 export async function readStoredFindings(
   manifestId: string,
 ): Promise<readonly Finding[]> {
+  const path = await resolveFindingsPath(manifestId);
   try {
-    const raw = await readFile(await resolveFindingsPath(manifestId), 'utf8');
-    const parsed = findingsFileSchema.safeParse(JSON.parse(raw));
+    const parsed = findingsFileSchema.safeParse(
+      JSON.parse(await readFile(path, 'utf8')),
+    );
     return parsed.success ? parsed.data.findings : [];
   } catch {
     return [];
