@@ -1,3 +1,4 @@
+export { registerDetectionTools } from './detection.tools.js';
 export { DETECTORS } from './detectors/index.js';
 export type {
   Detector,
@@ -8,6 +9,11 @@ export type {
   FindingEvidence,
   Severity,
 } from './finding.types.js';
+export {
+  FindingsStorageError,
+  mergeStoredFindings,
+  readStoredFindings,
+} from './findings-store.service.js';
 export {
   computeRisk,
   countBySeverity,

@@ -1,4 +1,8 @@
 export {
+  buildGuardedToolResult,
+  guardToolPayload,
+} from './guard-tool-output.js';
+export {
   cleanEmptySnippet,
   cleanUntrustedSnippet,
   type CleanSnippetOptions,
@@ -8,3 +12,7 @@ export {
   SNIPPET_CHARACTER_BUDGET,
   type CleanedSnippet,
 } from './redaction.types.js';
+export {
+  SNIPPET_CLOSE,
+  SNIPPET_OPEN,
+} from './snippet-markers.js';
