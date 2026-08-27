@@ -118,6 +118,38 @@ describe('invisible characters', () => {
     expect(rendered).not.toContain('\n');
   });
 
+  it('names the line separator, which Cf and Cc do not cover', () => {
+    const rendered = clean('one\u2028two');
+    expect(rendered).toContain('\u27EALS\u27EB');
+    expect(rendered).not.toContain('\u2028');
+  });
+
+  it('names the paragraph separator', () => {
+    const rendered = clean('one\u2029two');
+    expect(rendered).toContain('\u27EAPS\u27EB');
+    expect(rendered).not.toContain('\u2029');
+  });
+
+  it('names the next-line control, which Cc already covered', () => {
+    expect(clean('one\u0085two')).not.toContain('\u0085');
+  });
+
+  it('leaves nothing that can break a line, whichever separator is used', () => {
+    // The one-line guarantee stated as the property it actually is, rather
+    // than as a list of characters somebody remembered. U+2028 and U+2029
+    // are the two this missed: they are line breaks in their own Unicode
+    // categories, Cf and Cc do not cover them, and JSON.stringify emits
+    // them raw.
+    const LINE_BREAKING = [0x0a, 0x0d, 0x0b, 0x0c, 0x85, 0x2028, 0x2029];
+    for (const codePoint of LINE_BREAKING) {
+      const rendered = clean(`before${String.fromCodePoint(codePoint)}after`);
+      const survivors = Array.from(rendered).filter((character) =>
+        LINE_BREAKING.includes(character.codePointAt(0) ?? 0),
+      );
+      expect(survivors).toEqual([]);
+    }
+  });
+
   it('counts what it made visible', () => {
     const result = cleanUntrustedSnippet({ text: 'a\u200Bb\u200Bc\u202Ed' });
     expect(result.invisibleCharacterCount).toBe(3);

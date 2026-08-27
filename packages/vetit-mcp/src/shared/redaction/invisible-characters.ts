@@ -27,14 +27,23 @@ const CHARACTER_NAMES: ReadonlyMap<number, string> = new Map([
   [0x20_67, 'RLI'],
   [0x20_68, 'FSI'],
   [0x20_69, 'PDI'],
+  [0x20_28, 'LS'],
+  [0x20_29, 'PS'],
   [0xfe_ff, 'BOM'],
 ]);
 
 /**
- * Format characters, control characters, and the Unicode tag block that was
- * used to smuggle whole sentences past reviewers.
+ * Format characters, control characters, line and paragraph separators, and
+ * the Unicode tag block that was used to smuggle whole sentences past
+ * reviewers.
+ *
+ * `Zl` and `Zp` are here because `Cf` and `Cc` do not cover them. U+2028 and
+ * U+2029 are line breaks that sit in their own categories, `JSON.stringify`
+ * emits them raw, and a snippet carrying one still breaks the report row this
+ * module promises it cannot break. NEL (U+0085) needs no special case — it is
+ * a C1 control and `Cc` already has it.
  */
-const INVISIBLE_PATTERN = /[\p{Cf}\p{Cc}\u{E0000}-\u{E007F}]/gu;
+const INVISIBLE_PATTERN = /[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\u{E0000}-\u{E007F}]/gu;
 
 /** Characters this project uses to build its own markers. Escaped so untrusted
  * text cannot forge a boundary and pretend to be Vetit's own output. */
