@@ -29,14 +29,22 @@ const unannotatedTool: ManifestTool = {
 
 function manifestOf(tools: readonly ManifestTool[]): StoredManifest {
   return {
-    manifestId: 'M1',
+    manifestId: '01J0000000000000000000000M',
     fetchedAt: '2026-08-26T00:00:00.000Z',
     source: { kind: 'direct', url: 'http://127.0.0.1:1/mcp' },
     tools: [...tools],
+    unparseableToolCount: 0,
     resourceNames: [],
     promptNames: [],
+    resourcesStatus: 'unsupported',
+    promptsStatus: 'unsupported',
     manifestHash: 'hash',
     perToolHashes: {},
+    duplicateToolNames: [],
+    raw: {
+      tools: [...tools],
+      pageCounts: { tools: 1, resources: 0, prompts: 0 },
+    },
   };
 }
 
