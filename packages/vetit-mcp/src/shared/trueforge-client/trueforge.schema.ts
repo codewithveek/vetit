@@ -7,12 +7,22 @@ import { z } from 'zod';
  * is free to grow — and strict about the ones it does.
  */
 
-export const mcpServerToolSchema = z.object({
-  name: z.string(),
-  description: z.string().optional(),
-  inputSchema: z.unknown().optional(),
-  annotations: z.unknown().optional(),
-});
+/**
+ * Passthrough, like everything else that carries a target's own words.
+ *
+ * This dropped `title`, `outputSchema` and any field the harness or the target
+ * added — so the connector path produced a thinner manifest than the direct
+ * one, and the file called the raw manifest was missing text a reviewer would
+ * want to read.
+ */
+export const mcpServerToolSchema = z
+  .object({
+    name: z.string(),
+    description: z.string().optional(),
+    inputSchema: z.unknown().optional(),
+    annotations: z.unknown().optional(),
+  })
+  .passthrough();
 
 export const mcpServerToolsResponseSchema = z.union([
   z.object({ tools: z.array(mcpServerToolSchema) }),

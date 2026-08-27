@@ -4,6 +4,8 @@ export {
   type FetchManifestOptions,
 } from './fetch-manifest.service.js';
 export {
+  assertManifestId,
+  InvalidManifestIdError,
   ManifestNotFoundError,
   readStoredManifest,
   resolveManifestPath,
@@ -12,16 +14,19 @@ export {
 export {
   manifestToolSchema,
   storedManifestSchema,
+  type ListingStatus,
   type ManifestSource,
   type ManifestTool,
+  type RawListing,
   type StoredManifest,
   type ToolAnnotations,
 } from './manifest.schema.js';
-export type { ManifestSummary } from './manifest.types.js';
+export type { ManifestSummary, PagesFetched } from './manifest.types.js';
 export {
   canonicaliseTool,
   computeManifestHash,
   computePerToolHashes,
   computeToolHash,
   sortToolsByName,
+  type PerToolHashes,
 } from './stable-snapshot.js';

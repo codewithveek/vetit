@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { createDecoyApp } from '../../../vetit-decoy-mcp/src/decoy-server.js';
 import { fetchManifest } from '../../src/features/manifest/index.js';
 
@@ -64,6 +65,46 @@ describe('fetch_manifest against the decoy', () => {
     const onDisk = await readFile(summary.path, 'utf8');
     expect(onDisk).toContain('<IMPORTANT>');
     expect(summary.path.startsWith(workdir)).toBe(true);
+  });
+
+  it('keeps every field the target sent, not just the ones it expected', async () => {
+    // The schemas used to drop unknown keys before writing, so the file called
+    // the raw manifest was a filtered view of it. A field nobody expected is
+    // interesting precisely because nobody expected it.
+    const summary = await fetchManifest({ url: baseUrl, connectorName: undefined });
+    const stored: unknown = JSON.parse(await readFile(summary.path, 'utf8'));
+    const parsed = z
+      .object({
+        raw: z.object({
+          tools: z.array(z.unknown()),
+          pageCounts: z.object({ tools: z.number() }),
+        }),
+        tools: z.array(z.object({ name: z.string() }).passthrough()),
+      })
+      .parse(stored);
+
+    expect(parsed.raw.tools).toHaveLength(11);
+    expect(parsed.raw.pageCounts.tools).toBe(1);
+    // The decoy annotates and describes; both survive into the validated view.
+    const add = parsed.tools.find((tool) => tool.name === 'add');
+    expect(add).toHaveProperty('inputSchema');
+    expect(add).toHaveProperty('annotations');
+  });
+
+  it('reports how the listings ended rather than implying emptiness', async () => {
+    const summary = await fetchManifest({ url: baseUrl, connectorName: undefined });
+    // The decoy implements neither resources nor prompts. That is an absence
+    // the server declared, and it is recorded as one.
+    expect(summary.resources_status).toBe('unsupported');
+    expect(summary.prompts_status).toBe('unsupported');
+    expect(summary.resource_count).toBe(0);
+  });
+
+  it('reports nothing unparseable and no duplicate names for a well-formed target', async () => {
+    const summary = await fetchManifest({ url: baseUrl, connectorName: undefined });
+    expect(summary.unparseable_tool_count).toBe(0);
+    expect(summary.duplicate_tool_names).toEqual([]);
+    expect(summary.pages_fetched.tools).toBe(1);
   });
 
   it('gives the same hash for the same server twice running', async () => {

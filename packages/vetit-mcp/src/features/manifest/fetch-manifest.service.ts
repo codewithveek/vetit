@@ -4,15 +4,16 @@ import { listConnectorTools } from '../../shared/trueforge-client/index.js';
 import {
   manifestToolSchema,
   namedEntrySchema,
-  targetListingSchema,
+  serverInfoSchema,
+  type ListingStatus,
   type ManifestSource,
   type ManifestTool,
+  type RawListing,
   type StoredManifest,
 } from './manifest.schema.js';
 import type { ManifestSummary } from './manifest.types.js';
 import { writeStoredManifest } from './manifest-store.service.js';
 import { computeManifestHash, computePerToolHashes } from './stable-snapshot.js';
-import { z } from 'zod';
 
 /**
  * Listing what a server offers, two ways.
@@ -24,39 +25,79 @@ import { z } from 'zod';
  * (spec §6).
  */
 
-const namesSchema = z.array(namedEntrySchema);
+function extractNames(entries: readonly unknown[]): string[] {
+  return entries
+    .map((entry) => namedEntrySchema.safeParse(entry))
+    .filter((parsed) => parsed.success)
+    .map((parsed) => parsed.data.name);
+}
 
-function extractNames(entries: unknown): string[] {
-  const parsed = namesSchema.safeParse(entries);
-  return parsed.success ? parsed.data.map((entry) => entry.name) : [];
+interface ValidatedTools {
+  readonly tools: ManifestTool[];
+  readonly unparseableToolCount: number;
+}
+
+/**
+ * Validates each tool on its own.
+ *
+ * Parsing the array as a whole meant one malformed entry threw away every
+ * other tool in the manifest — and a server that wants to avoid review has
+ * every reason to send one. Bad entries are counted, and they are still in
+ * `raw` where a human can look at them.
+ */
+function validateTools(rawTools: readonly unknown[]): ValidatedTools {
+  const tools: ManifestTool[] = [];
+  let unparseableToolCount = 0;
+  for (const entry of rawTools) {
+    const parsed = manifestToolSchema.safeParse(entry);
+    if (parsed.success) tools.push(parsed.data);
+    else unparseableToolCount += 1;
+  }
+  return { tools, unparseableToolCount };
 }
 
 interface ListedSurface {
-  readonly tools: readonly ManifestTool[];
-  readonly resourceNames: readonly string[];
-  readonly promptNames: readonly string[];
+  readonly raw: RawListing;
+  readonly resourcesStatus: ListingStatus;
+  readonly promptsStatus: ListingStatus;
   readonly serverName: string | undefined;
   readonly serverVersion: string | undefined;
 }
 
 async function listDirectly(url: string): Promise<ListedSurface> {
-  const raw = await listTargetSurface({ url });
-  const listing = targetListingSchema.parse(raw);
+  const listing = await listTargetSurface({ url });
+  const serverInfo = serverInfoSchema.safeParse(listing.serverInfo);
   return {
-    tools: listing.tools.tools,
-    resourceNames: extractNames(listing.resources?.resources),
-    promptNames: extractNames(listing.prompts?.prompts),
-    serverName: listing.serverInfo?.name,
-    serverVersion: listing.serverInfo?.version,
+    raw: {
+      serverInfo: listing.serverInfo,
+      capabilities: listing.capabilities,
+      tools: [...listing.tools],
+      ...(listing.resources === undefined
+        ? {}
+        : { resources: [...listing.resources] }),
+      ...(listing.prompts === undefined ? {} : { prompts: [...listing.prompts] }),
+      pageCounts: listing.pageCounts,
+    },
+    resourcesStatus: listing.resources === undefined ? 'unsupported' : 'listed',
+    promptsStatus: listing.prompts === undefined ? 'unsupported' : 'listed',
+    serverName: serverInfo.success ? serverInfo.data.name : undefined,
+    serverVersion: serverInfo.success ? serverInfo.data.version : undefined,
   };
 }
 
+/**
+ * The connector path lists tools only — the admin API exposes no resource or
+ * prompt listing — so both are recorded as unsupported rather than as empty.
+ */
 async function listThroughConnector(connectorName: string): Promise<ListedSurface> {
   const tools = await listConnectorTools(connectorName);
   return {
-    tools: z.array(manifestToolSchema).parse(tools),
-    resourceNames: [],
-    promptNames: [],
+    raw: {
+      tools: [...tools],
+      pageCounts: { tools: 1, resources: 0, prompts: 0 },
+    },
+    resourcesStatus: 'unsupported',
+    promptsStatus: 'unsupported',
     serverName: connectorName,
     serverVersion: undefined,
   };
@@ -88,10 +129,15 @@ async function listSurface(source: ManifestSource): Promise<ListedSurface> {
     : await listDirectly(source.url);
 }
 
-function buildStoredManifest(
-  source: ManifestSource,
-  surface: ListedSurface,
-): StoredManifest {
+interface StoredManifestInput {
+  readonly source: ManifestSource;
+  readonly surface: ListedSurface;
+}
+
+function buildStoredManifest(input: StoredManifestInput): StoredManifest {
+  const { source, surface } = input;
+  const { tools, unparseableToolCount } = validateTools(surface.raw.tools);
+  const perTool = computePerToolHashes(tools);
   return {
     manifestId: ulid(),
     fetchedAt: new Date().toISOString(),
@@ -100,21 +146,37 @@ function buildStoredManifest(
     ...(surface.serverVersion === undefined
       ? {}
       : { serverVersion: surface.serverVersion }),
-    tools: [...surface.tools],
-    resourceNames: [...surface.resourceNames],
-    promptNames: [...surface.promptNames],
-    manifestHash: computeManifestHash(surface.tools),
-    perToolHashes: computePerToolHashes(surface.tools),
+    tools,
+    unparseableToolCount,
+    resourceNames: extractNames(surface.raw.resources ?? []),
+    promptNames: extractNames(surface.raw.prompts ?? []),
+    resourcesStatus: surface.resourcesStatus,
+    promptsStatus: surface.promptsStatus,
+    manifestHash: computeManifestHash(tools),
+    perToolHashes: perTool.hashes,
+    duplicateToolNames: [...perTool.duplicateNames],
+    raw: surface.raw,
   };
 }
 
-function summarise(manifest: StoredManifest, path: string): ManifestSummary {
+interface SummaryInput {
+  readonly manifest: StoredManifest;
+  readonly path: string;
+}
+
+function summarise(input: SummaryInput): ManifestSummary {
+  const { manifest, path } = input;
   return {
     manifest_id: manifest.manifestId,
     path,
     tool_count: manifest.tools.length,
+    unparseable_tool_count: manifest.unparseableToolCount,
+    duplicate_tool_names: manifest.duplicateToolNames,
     resource_count: manifest.resourceNames.length,
     prompt_count: manifest.promptNames.length,
+    resources_status: manifest.resourcesStatus,
+    prompts_status: manifest.promptsStatus,
+    pages_fetched: manifest.raw.pageCounts,
     manifest_hash: manifest.manifestHash,
     per_tool_hashes: manifest.perToolHashes,
   };
@@ -129,7 +191,7 @@ export async function fetchManifest(
 ): Promise<ManifestSummary> {
   const source = buildSource(options);
   const surface = await listSurface(source);
-  const manifest = buildStoredManifest(source, surface);
+  const manifest = buildStoredManifest({ source, surface });
   const path = await writeStoredManifest(manifest);
-  return summarise(manifest, path);
+  return summarise({ manifest, path });
 }

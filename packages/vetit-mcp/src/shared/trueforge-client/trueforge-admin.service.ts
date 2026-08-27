@@ -36,13 +36,52 @@ export class TrueforgeRequestError extends Error {
   }
 }
 
-async function callTrueforge(request: TrueforgeRequest): Promise<unknown> {
+/**
+ * The same deadline the direct listing path uses.
+ *
+ * `fetch` has no timeout of its own, so an unresponsive admin API left a
+ * connector-mode review pending for however long the HTTP stack felt like —
+ * making the connector path far less bounded than the direct one, which has
+ * always had 20 seconds. Overridable, because an admin API behind a slow link
+ * is a configuration problem rather than a code one.
+ */
+const DEFAULT_TIMEOUT_MS = 20_000;
+const TIMEOUT_STATUS = 504;
+
+function resolveTimeoutMs(): number {
+  const configured = Number.parseInt(process.env['TRUEFORGE_TIMEOUT_MS'] ?? '', 10);
+  return Number.isInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_TIMEOUT_MS;
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError';
+}
+
+async function sendTrueforgeRequest(request: TrueforgeRequest): Promise<Response> {
   const endpoint = resolveTrueforgeEndpoint();
-  const response = await fetch(`${endpoint.baseUrl}${request.path}`, {
-    method: request.method,
-    headers: buildTrueforgeHeaders(endpoint),
-    ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-  });
+  const timeoutMs = resolveTimeoutMs();
+  try {
+    return await fetch(`${endpoint.baseUrl}${request.path}`, {
+      method: request.method,
+      headers: buildTrueforgeHeaders(endpoint),
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+    });
+  } catch (error) {
+    if (isTimeout(error)) {
+      throw new TrueforgeRequestError(
+        TIMEOUT_STATUS,
+        `${request.method} ${request.path} timed out after ${String(timeoutMs)}ms.`,
+      );
+    }
+    throw error;
+  }
+}
+
+async function callTrueforge(request: TrueforgeRequest): Promise<unknown> {
+  const response = await sendTrueforgeRequest(request);
   if (!response.ok) {
     const detail = await response.text();
     throw new TrueforgeRequestError(

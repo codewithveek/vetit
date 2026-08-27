@@ -71,6 +71,79 @@ describe('what the hash notices', () => {
     expect(computeToolHash(downgraded)).not.toBe(computeToolHash(otherTool));
   });
 
+  it('notices an enum value whose whitespace changed', () => {
+    // Reflow tolerance used to run over every string at every depth, so a
+    // contract change like "a  b" becoming "a b" — which accepts different
+    // input — hashed identically to the original.
+    const before: ManifestTool = {
+      ...baseTool,
+      inputSchema: {
+        type: 'object',
+        properties: { mode: { type: 'string', enum: ['a  b', 'c'] } },
+      },
+    };
+    const after: ManifestTool = {
+      ...baseTool,
+      inputSchema: {
+        type: 'object',
+        properties: { mode: { type: 'string', enum: ['a b', 'c'] } },
+      },
+    };
+    expect(computeToolHash(after)).not.toBe(computeToolHash(before));
+  });
+
+  it('notices a changed regular expression pattern', () => {
+    const before: ManifestTool = {
+      ...baseTool,
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string', pattern: '^a  b$' } },
+      },
+    };
+    const after: ManifestTool = {
+      ...baseTool,
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string', pattern: '^a b$' } },
+      },
+    };
+    expect(computeToolHash(after)).not.toBe(computeToolHash(before));
+  });
+
+  it('notices a changed default value', () => {
+    const withDefault = (value: string): ManifestTool => ({
+      ...baseTool,
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string', default: value } },
+      },
+    });
+    expect(computeToolHash(withDefault('a b'))).not.toBe(
+      computeToolHash(withDefault('a  b')),
+    );
+  });
+
+  it('notices a tool name that gained a trailing space', () => {
+    // A different name is a different tool, whatever it looks like.
+    expect(computeToolHash({ ...baseTool, name: 'search_docs ' })).not.toBe(
+      computeToolHash(baseTool),
+    );
+  });
+
+  it('notices a changed annotation title', () => {
+    expect(
+      computeToolHash({
+        ...baseTool,
+        annotations: { readOnlyHint: true, destructiveHint: false, title: 'Search  docs' },
+      }),
+    ).not.toBe(
+      computeToolHash({
+        ...baseTool,
+        annotations: { readOnlyHint: true, destructiveHint: false, title: 'Search docs' },
+      }),
+    );
+  });
+
   it('notices a new parameter', () => {
     const widened: ManifestTool = {
       ...baseTool,
@@ -91,16 +164,16 @@ describe('what the hash notices', () => {
 
 describe('per-tool hashes', () => {
   it('names every tool so a change can be attributed', () => {
-    const hashes = computePerToolHashes([baseTool, otherTool]);
+    const { hashes } = computePerToolHashes([baseTool, otherTool]);
     expect(Object.keys(hashes).sort()).toEqual(['create_page', 'search_docs']);
   });
 
   it('changes only the entry for the tool that changed', () => {
-    const before = computePerToolHashes([baseTool, otherTool]);
+    const before = computePerToolHashes([baseTool, otherTool]).hashes;
     const after = computePerToolHashes([
       baseTool,
       { ...otherTool, description: 'Creates a page, and more.' },
-    ]);
+    ]).hashes;
     expect(after['search_docs']).toBe(before['search_docs']);
     expect(after['create_page']).not.toBe(before['create_page']);
   });
@@ -110,5 +183,28 @@ describe('per-tool hashes', () => {
     expect(computeToolHash(bare)).toBe(
       computeToolHash({ name: 'bare', description: '', inputSchema: {}, annotations: {} }),
     );
+  });
+
+  it('keeps a tool named __proto__ as a real entry', () => {
+    // Plain assignment ran the inherited setter and changed the object's
+    // prototype instead of adding an entry, so the tool vanished from the map
+    // while still counting towards tool_count.
+    const evil: ManifestTool = { name: '__proto__', description: 'Looks normal.' };
+    const { hashes } = computePerToolHashes([baseTool, evil]);
+    expect(Object.hasOwn(hashes, '__proto__')).toBe(true);
+    expect(Object.keys(hashes).sort()).toEqual(['__proto__', 'search_docs']);
+    expect(JSON.parse(JSON.stringify(hashes))).toHaveProperty(['__proto__']);
+  });
+
+  it('reports a duplicated name instead of silently overwriting it', () => {
+    const first: ManifestTool = { name: 'search_docs', description: 'One.' };
+    const second: ManifestTool = { name: 'search_docs', description: 'Two.' };
+    const result = computePerToolHashes([first, second]);
+    expect(result.duplicateNames).toEqual(['search_docs']);
+    expect(Object.keys(result.hashes)).toEqual(['search_docs']);
+  });
+
+  it('reports nothing when every name is distinct', () => {
+    expect(computePerToolHashes([baseTool, otherTool]).duplicateNames).toEqual([]);
   });
 });
