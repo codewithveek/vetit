@@ -8,6 +8,7 @@ export {
   assertManifestId,
   InvalidManifestIdError,
   ManifestNotFoundError,
+  ManifestStorageError,
   readStoredManifest,
   resolveManifestPath,
   writeStoredManifest,

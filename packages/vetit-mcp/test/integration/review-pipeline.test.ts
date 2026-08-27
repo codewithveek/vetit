@@ -89,7 +89,9 @@ describe('vetit-mcp as a server', () => {
       'compute_risk',
       'fetch_manifest',
       'lookup_advisories',
+      'quarantine_server',
       'scan_descriptions',
+      'write_admission',
     ]);
   });
 
@@ -104,11 +106,11 @@ describe('vetit-mcp as a server', () => {
   });
 
   it('marks every tool that changes something as a write', async () => {
-    // This assertion used to require read-only of everything, and was wrong
-    // about five tools. fetch_manifest writes a manifest record, and each
-    // scanning tool merges findings into a file — all annotated read-only, in
-    // a project whose whole argument is that a tool catching servers for lying
-    // about their labels has to get its own right.
+    // This assertion used to name two tools and was wrong about five others.
+    // fetch_manifest writes a manifest record, and each scanning tool merges
+    // findings into a file — all annotated read-only, in a project whose whole
+    // argument is that a tool catching servers for lying about their labels
+    // has to get its own right.
     const { tools } = await client.listTools();
     const writes = tools
       .filter((tool) => tool.annotations?.readOnlyHint !== true)
@@ -119,7 +121,9 @@ describe('vetit-mcp as a server', () => {
       'check_annotations',
       'check_shadowing',
       'fetch_manifest',
+      'quarantine_server',
       'scan_descriptions',
+      'write_admission',
     ]);
   });
 
@@ -132,13 +136,16 @@ describe('vetit-mcp as a server', () => {
     expect(reads).toEqual(['compute_risk', 'lookup_advisories']);
   });
 
-  it('claims nothing destructive, because none of these tools is', async () => {
-    // The scans write, but additively: they add findings to a record and never
-    // remove one. Destroying something needs probe_tool or write_admission.
+  it('marks only the genuinely destructive tools destructive', async () => {
+    // The scans write, but additively: they add findings and never remove
+    // one. Rewriting a permission list can undo an admission, which is why
+    // that one is destructive and these are not.
     const { tools } = await client.listTools();
-    for (const tool of tools) {
-      expect(tool.annotations?.destructiveHint).toBe(false);
-    }
+    const destructive = tools
+      .filter((tool) => tool.annotations?.destructiveHint === true)
+      .map((tool) => tool.name)
+      .sort();
+    expect(destructive).toEqual(['write_admission']);
   });
 
   it('publishes descriptions that instruct nobody', async () => {

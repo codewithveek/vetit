@@ -62,6 +62,9 @@ async function scan(request: ScanRequest): Promise<ScanOutcome> {
   const merged = await mergeStoredFindings({
     manifestId: request.manifestId,
     findings: run.findings,
+    // Recorded whether or not anything was found: admission has to be able to
+    // tell a clean review from no review.
+    detectorsRun: request.detectorIds,
   });
   return {
     manifest_id: request.manifestId,

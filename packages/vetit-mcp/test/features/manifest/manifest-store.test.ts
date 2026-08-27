@@ -44,6 +44,25 @@ const TRAVERSALS = [
   '',
 ];
 
+/** The smallest thing the stored-manifest schema will accept. */
+function manifestShapedRecord(manifestId: string): Record<string, unknown> {
+  return {
+    manifestId,
+    fetchedAt: '2026-08-27T00:00:00.000Z',
+    source: { kind: 'direct', url: 'http://127.0.0.1:1/mcp' },
+    tools: [],
+    unparseableToolCount: 0,
+    resourceNames: [],
+    promptNames: [],
+    resourcesStatus: 'unsupported',
+    promptsStatus: 'unsupported',
+    manifestHash: 'hash',
+    perToolHashes: {},
+    duplicateToolNames: [],
+    raw: { tools: [], pageCounts: { tools: 1, resources: 0, prompts: 0 } },
+  };
+}
+
 describe('resolveManifestPath', () => {
   it('accepts an id it minted itself', async () => {
     const id = ulid();
@@ -107,5 +126,46 @@ describe('readStoredManifest', () => {
     expect(entries.every((entry) => entry.endsWith('.json') || entries.length === 0)).toBe(
       true,
     );
+  });
+});
+
+describe('a manifest that is not the manifest it should be', () => {
+  async function writeRaw(manifestId: string, contents: string): Promise<void> {
+    await writeFile(await resolveManifestPath(manifestId), contents, 'utf8');
+  }
+
+  it('refuses a record belonging to a different manifest', async () => {
+    // Admission pairs this record with a findings record keyed separately, so
+    // a copied file could apply permissions derived from one tool surface and
+    // another review's findings.
+    const manifestId = ulid();
+    await writeRaw(manifestId, JSON.stringify({ ...manifestShapedRecord(ulid()) }));
+    await expect(readStoredManifest(manifestId)).rejects.toThrow(/instead/);
+  });
+
+  it('refuses a file that is not valid JSON, and names the manifest', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, '{ "tools": [ truncated');
+    await expect(readStoredManifest(manifestId)).rejects.toThrow(/not valid JSON/);
+    await expect(readStoredManifest(manifestId)).rejects.toThrow(manifestId);
+  });
+
+  it('refuses a file that is valid JSON but not a manifest', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, JSON.stringify({ something: 'else' }));
+    await expect(readStoredManifest(manifestId)).rejects.toThrow(/not a manifest record/);
+  });
+
+  it('still reports a genuinely absent manifest as not found', async () => {
+    await expect(readStoredManifest(ulid())).rejects.toBeInstanceOf(
+      ManifestNotFoundError,
+    );
+  });
+
+  it('accepts a record whose id matches', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, JSON.stringify(manifestShapedRecord(manifestId)));
+    const stored = await readStoredManifest(manifestId);
+    expect(stored.manifestId).toBe(manifestId);
   });
 });
