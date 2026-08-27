@@ -10,6 +10,7 @@ export type {
   Severity,
 } from './finding.types.js';
 export {
+  FindingsStorageError,
   mergeStoredFindings,
   readStoredFindings,
 } from './findings-store.service.js';

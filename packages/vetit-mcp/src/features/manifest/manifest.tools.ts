@@ -37,7 +37,14 @@ export function registerManifestTools(server: McpServer): void {
         'target wrote is returned, because that text is the attack.',
       inputSchema: fetchManifestInput,
       annotations: {
-        readOnlyHint: true,
+        // Not read-only: every call writes a new manifest record to the
+        // workdir. It was annotated read-only, in a project whose whole
+        // argument is that a tool catching servers for lying about their
+        // labels has to get its own right.
+        //
+        // Additive, so `destructiveHint` stays false. Not idempotent: each
+        // call mints a new manifest id and leaves another file behind.
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
         openWorldHint: true,

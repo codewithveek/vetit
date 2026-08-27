@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -77,6 +77,109 @@ describe('what an empty result means', () => {
     await expect(readStoredFindings('not-an-id')).rejects.toBeInstanceOf(
       InvalidManifestIdError,
     );
+  });
+});
+
+describe('corruption is not an empty record', () => {
+  // Every read failure used to become an empty list, so compute_risk would
+  // report zero and say "nothing was checked", and the next scan would
+  // overwrite the damaged file as though it had never held anything.
+  async function writeRaw(manifestId: string, contents: string): Promise<void> {
+    await mergeStoredFindings({ manifestId, findings: [] });
+    const reports = join(workdir, 'reports');
+    await writeFile(join(reports, `${manifestId}.findings.json`), contents, 'utf8');
+  }
+
+  it('refuses a file that is not valid JSON', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, '{ "findings": [ truncated');
+    await expect(readStoredFindings(manifestId)).rejects.toThrow(/not valid JSON/);
+  });
+
+  it('refuses a file that is valid JSON but not a findings record', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, JSON.stringify({ something: 'else' }));
+    await expect(readStoredFindings(manifestId)).rejects.toThrow(
+      /not a findings record/,
+    );
+  });
+
+  it('refuses a record belonging to a different manifest', async () => {
+    const manifestId = ulid();
+    await writeRaw(
+      manifestId,
+      JSON.stringify({ manifestId: ulid(), findings: [] }),
+    );
+    await expect(readStoredFindings(manifestId)).rejects.toThrow(/instead/);
+  });
+
+  it('refuses a findings entry with the wrong shape', async () => {
+    const manifestId = ulid();
+    await writeRaw(
+      manifestId,
+      JSON.stringify({ manifestId, findings: [{ id: 'F-001' }] }),
+    );
+    await expect(readStoredFindings(manifestId)).rejects.toThrow(
+      /not a findings record/,
+    );
+  });
+
+  it('says what to do about it rather than only that it failed', async () => {
+    const manifestId = ulid();
+    await writeRaw(manifestId, 'not json at all');
+    await expect(readStoredFindings(manifestId)).rejects.toThrow(/rerun the scans/);
+  });
+});
+
+describe('concurrent merges', () => {
+  it('keeps the union when two scans run at once', async () => {
+    // Read, change, write — with nothing holding the three together, two
+    // parallel scans both read the same baseline and the second write
+    // discarded the first scan's findings.
+    const manifestId = ulid();
+    const [first, second] = await Promise.all([
+      mergeStoredFindings({ manifestId, findings: [finding('alpha')] }),
+      mergeStoredFindings({ manifestId, findings: [finding('beta')] }),
+    ]);
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    const stored = await readStoredFindings(manifestId);
+    expect(stored.map((entry) => entry.tool).sort()).toEqual(['alpha', 'beta']);
+  });
+
+  it('keeps every finding when many scans run at once', async () => {
+    const manifestId = ulid();
+    const tools = Array.from({ length: 12 }, (_, index) => `tool_${String(index)}`);
+    await Promise.all(
+      tools.map(async (tool) =>
+        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+      ),
+    );
+    const stored = await readStoredFindings(manifestId);
+    expect(stored.map((entry) => entry.tool).sort()).toEqual([...tools].sort());
+  });
+
+  it('leaves the numbering contiguous after a concurrent burst', async () => {
+    const manifestId = ulid();
+    await Promise.all(
+      ['a', 'b', 'c'].map(async (tool) =>
+        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+      ),
+    );
+    const stored = await readStoredFindings(manifestId);
+    expect(stored.map((entry) => entry.id)).toEqual(['F-001', 'F-002', 'F-003']);
+  });
+
+  it('leaves no temporary files behind', async () => {
+    const manifestId = ulid();
+    await Promise.all(
+      ['a', 'b'].map(async (tool) =>
+        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+      ),
+    );
+    const entries = await readdir(join(workdir, 'reports'));
+    expect(entries.filter((entry) => entry.endsWith('.tmp'))).toEqual([]);
   });
 });
 

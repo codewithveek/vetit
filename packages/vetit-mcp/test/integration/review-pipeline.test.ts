@@ -93,10 +93,50 @@ describe('vetit-mcp as a server', () => {
     ]);
   });
 
-  it('annotates every one of its own tools honestly', async () => {
+  it('declares both hints on every one of its own tools', async () => {
+    // The rule Vetit enforces on other servers, enforced on itself: a tool
+    // that says nothing about what it does to the world cannot be classified.
     const { tools } = await client.listTools();
     for (const tool of tools) {
-      expect(tool.annotations?.readOnlyHint).toBe(true);
+      expect(tool.annotations?.readOnlyHint).toBeTypeOf('boolean');
+      expect(tool.annotations?.destructiveHint).toBeTypeOf('boolean');
+    }
+  });
+
+  it('marks every tool that changes something as a write', async () => {
+    // This assertion used to require read-only of everything, and was wrong
+    // about five tools. fetch_manifest writes a manifest record, and each
+    // scanning tool merges findings into a file — all annotated read-only, in
+    // a project whose whole argument is that a tool catching servers for lying
+    // about their labels has to get its own right.
+    const { tools } = await client.listTools();
+    const writes = tools
+      .filter((tool) => tool.annotations?.readOnlyHint !== true)
+      .map((tool) => tool.name)
+      .sort();
+    expect(writes).toEqual([
+      'analyze_schemas',
+      'check_annotations',
+      'check_shadowing',
+      'fetch_manifest',
+      'scan_descriptions',
+    ]);
+  });
+
+  it('keeps read-only for the tools that genuinely touch nothing', async () => {
+    const { tools } = await client.listTools();
+    const reads = tools
+      .filter((tool) => tool.annotations?.readOnlyHint === true)
+      .map((tool) => tool.name)
+      .sort();
+    expect(reads).toEqual(['compute_risk', 'lookup_advisories']);
+  });
+
+  it('claims nothing destructive, because none of these tools is', async () => {
+    // The scans write, but additively: they add findings to a record and never
+    // remove one. Destroying something needs probe_tool or write_admission.
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
   });
