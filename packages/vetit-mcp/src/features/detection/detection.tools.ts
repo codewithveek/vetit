@@ -2,7 +2,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { buildGuardedToolResult } from '../../shared/redaction/index.js';
 import { readStoredManifest, resolveManifestPath } from '../manifest/index.js';
-import { mergeStoredFindings, readStoredFindings } from './findings-store.service.js';
+import {
+  FindingsStorageError,
+  mergeStoredFindings,
+  readStoredFindings,
+} from './findings-store.service.js';
 import { computeRisk } from './risk-score.js';
 import { runDetectors } from './run-detectors.js';
 import type { Finding } from './finding.types.js';
@@ -79,7 +83,14 @@ function registerScanDescriptions(server: McpServer): void {
         'fetched manifest. Every finding carries a file path, a JSON pointer ' +
         'and a snippet that has been cleaned before being returned.',
       inputSchema: manifestIdInput,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      annotations: {
+        // Persists findings to the manifest's record. Additive, never
+        // destructive, but a write — see the note above registerDetectionTools.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ manifest_id }) =>
       buildGuardedToolResult(
@@ -97,7 +108,14 @@ function registerAnalyzeSchemas(server: McpServer): void {
         'Flags parameters built for smuggling data out: free-text fields with ' +
         'no stated purpose, and fields the visible description never mentions.',
       inputSchema: manifestIdInput,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      annotations: {
+        // Persists findings to the manifest's record. Additive, never
+        // destructive, but a write — see the note above registerDetectionTools.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ manifest_id }) =>
       buildGuardedToolResult(
@@ -152,7 +170,14 @@ function registerCheckAnnotations(server: McpServer): void {
         'Reports which tools declare readOnlyHint and destructiveHint and ' +
         'which say nothing. A tool that says nothing is treated as a write.',
       inputSchema: manifestIdInput,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      annotations: {
+        // Persists findings to the manifest's record. Additive, never
+        // destructive, but a write — see the note above registerDetectionTools.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ manifest_id }) =>
       buildGuardedToolResult(await summariseAnnotations(manifest_id)),
@@ -174,7 +199,14 @@ function registerCheckShadowing(server: McpServer): void {
           .default([])
           .describe('Tool names already trusted in this workspace.'),
       },
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      annotations: {
+        // Persists findings to the manifest's record. Additive, never
+        // destructive, but a write — see the note above registerDetectionTools.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ manifest_id, installed_tool_names }) =>
       buildGuardedToolResult(
@@ -201,10 +233,26 @@ function registerComputeRisk(server: McpServer): void {
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ manifest_id }) => {
-      const findings = await readStoredFindings(manifest_id);
+      let findings: readonly Finding[];
+      try {
+        findings = await readStoredFindings(manifest_id);
+      } catch (error) {
+        // A damaged record must not come back as a score. Returning the
+        // refusal rather than throwing keeps the explanation inside the
+        // guarded payload, where the agent will actually read it.
+        if (error instanceof FindingsStorageError) {
+          return buildGuardedToolResult({
+            manifest_id,
+            scored: false,
+            refused: error.message,
+          });
+        }
+        throw error;
+      }
       const assessment = computeRisk(findings);
       return buildGuardedToolResult({
         manifest_id,
+        scored: true,
         score: assessment.score,
         band: assessment.band,
         counts: assessment.counts,
@@ -256,6 +304,22 @@ function registerLookupAdvisories(server: McpServer): void {
   );
 }
 
+/**
+ * Why four of these are not read-only.
+ *
+ * Every scanning tool merges its results into the manifest's findings record,
+ * which is a file on disk. They were annotated `readOnlyHint: true` anyway —
+ * in a project whose entire argument is that a tool which catches servers
+ * lying about their labels has to get its own right. A client trusting that
+ * hint would auto-approve an operation that changes state.
+ *
+ * `destructiveHint` stays false because the merge is additive: it adds
+ * findings to a record, and never removes one. `idempotentHint` is true
+ * because running the same scan twice leaves the same set.
+ *
+ * `compute_risk` and `lookup_advisories` really are read-only, and keep the
+ * annotation they have earned.
+ */
 export function registerDetectionTools(server: McpServer): void {
   registerScanDescriptions(server);
   registerAnalyzeSchemas(server);

@@ -8,6 +8,14 @@ import {
   RENDERED_CHARACTER_CEILING,
   SNIPPET_CHARACTER_BUDGET,
 } from './redaction.types.js';
+import {
+  CEILING_MARK,
+  MARKER_CLOSE,
+  MARKER_OPEN,
+  SNIPPET_CLOSE,
+  SNIPPET_OPEN,
+  TRUNCATION_MARK,
+} from './snippet-markers.js';
 
 /**
  * Spec §4 Rule 1, in one function.
@@ -28,13 +36,6 @@ import {
  * one Vetit wrote itself.
  */
 
-const SNIPPET_OPEN = '⟦UNTRUSTED_TEXT: ';
-const SNIPPET_CLOSE = ' ⟧';
-const TRUNCATION_MARK = '⟪TRUNCATED⟫';
-const CEILING_MARK = '⟪CEILING_REACHED⟫';
-
-const MARKER_OPEN = '⟪';
-const MARKER_CLOSE = '⟫';
 
 export interface CleanSnippetOptions {
   readonly text: string;
