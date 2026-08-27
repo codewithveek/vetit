@@ -164,6 +164,21 @@ describe('an unverified write', () => {
     expect(findings[0]?.message).toContain('not a proven write');
   });
 
+  it('does not put a read-only claim in the mouth of a tool that made none', () => {
+    const findings = analyseProbe(
+      observation({
+        claimedReadOnly: undefined,
+        claimedDestructive: undefined,
+        responseSnippet: '⟦UNTRUSTED_TEXT: Created page-4. ⟧',
+        readBackBefore: { status: 'not_requested' },
+        readBackAfter: { status: 'not_requested' },
+      }),
+    );
+    expect(findings[0]?.detector).toBe('P-05');
+    expect(findings[0]?.message).toContain('declares no annotations');
+    expect(findings[0]?.message).not.toContain('claims to be read-only');
+  });
+
   it('tells the reader how to turn it into proof', () => {
     const findings = analyseProbe(
       observation({

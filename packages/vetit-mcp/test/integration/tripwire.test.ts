@@ -50,12 +50,20 @@ const probeResultSchema = z.object({
 
 const textContentSchema = z.object({
   content: z.array(z.object({ type: z.literal('text'), text: z.string() })).min(1),
+  isError: z.boolean().optional(),
 });
+
+/** A failed tool call, carrying what the tool said rather than a parse error. */
+class ToolCallError extends Error {}
 
 async function callVetit(name: string, args: Record<string, unknown>): Promise<unknown> {
   const raw = await client.callTool({ name, arguments: args });
   const parsed = textContentSchema.parse(raw);
-  return JSON.parse(parsed.content[0]?.text ?? 'null');
+  const text = parsed.content[0]?.text ?? 'null';
+  // A failing tool returns its message as text, so parsing it as JSON turned
+  // every real failure into an unrelated syntax error.
+  if (parsed.isError === true) throw new ToolCallError(text);
+  return JSON.parse(text);
 }
 
 async function listen(app: ReturnType<typeof createVetitApp>): Promise<Server> {
@@ -88,25 +96,46 @@ async function reserveFreePort(): Promise<number> {
 }
 
 function setEnvironment(name: string, value: string): void {
-  previous[name] = process.env[name];
+  // Only the value from before the test ran is worth restoring; a retry that
+  // re-points the collector must not overwrite it with its own.
+  if (!(name in previous)) previous[name] = process.env[name];
   process.env[name] = value;
+}
+
+/**
+ * Points the decoy at a freshly reserved port, and hands it to the collector.
+ *
+ * There is a gap here that cannot be closed from out here. Only the process
+ * that binds a port can choose one without a race, and the collector binds
+ * when the probe starts — long after the decoy has to have been told where to
+ * send. So the port is reserved, released, and claimed a moment later, and in
+ * between it belongs to whoever asks for it. On a busy CI host that is a real
+ * `EADDRINUSE`, and it used to surface as a broken tripwire.
+ *
+ * The gap is survived rather than closed: see `probeCheckEnvironment`.
+ */
+async function pointDecoyAtAFreshPort(): Promise<void> {
+  const collectorPort = await reserveFreePort();
+  setEnvironment('VETIT_COLLECTOR_PORT', String(collectorPort));
+  // The decoy reads this when the tool is called, exactly as it would if an
+  // operator had planted a tripwire key in the target's environment.
+  setEnvironment(
+    'VETIT_DECOY_COLLECTOR_URL',
+    `http://127.0.0.1:${String(collectorPort)}/collect`,
+  );
+}
+
+function isPortConflict(error: unknown): boolean {
+  return error instanceof ToolCallError && error.message.includes('could not bind');
 }
 
 beforeAll(async () => {
   workdir = await mkdtemp(join(tmpdir(), 'vetit-tripwire-'));
   setEnvironment('VETIT_WORKDIR', workdir);
 
-  const collectorPort = await reserveFreePort();
-  setEnvironment('VETIT_COLLECTOR_PORT', String(collectorPort));
   setEnvironment('VETIT_CANARY_VALUE', CANARY_VALUE);
-
-  // The decoy reads these when the tool is called, exactly as it would if an
-  // operator had planted a tripwire key in the target's environment.
-  setEnvironment(
-    'VETIT_DECOY_COLLECTOR_URL',
-    `http://127.0.0.1:${String(collectorPort)}/collect`,
-  );
   setEnvironment('VETIT_TRIPWIRE_TOKEN', CANARY_VALUE);
+  await pointDecoyAtAFreshPort();
 
   decoyServer = await listen(createDecoyApp({ isPoisoned: false }));
   vetitServer = await listen(createVetitApp());
@@ -144,7 +173,7 @@ afterAll(async () => {
   await rm(workdir, { recursive: true, force: true });
 });
 
-async function probeCheckEnvironment(): Promise<z.infer<typeof probeResultSchema>> {
+async function probeOnce(): Promise<z.infer<typeof probeResultSchema>> {
   const idSchema = z.object({ manifest_id: z.string() });
   const { manifest_id } = idSchema.parse(
     await callVetit('fetch_manifest', { url: decoyUrl }),
@@ -157,6 +186,31 @@ async function probeCheckEnvironment(): Promise<z.infer<typeof probeResultSchema
       allow_non_read_only: true,
     }),
   );
+}
+
+/** Enough that losing every reserved port in a row is not worth worrying about. */
+const PORT_ATTEMPTS = 5;
+
+/**
+ * A probe that survives losing its reserved port.
+ *
+ * Only a bind failure is retried, on a port reserved again from scratch.
+ * Anything else — a tool that refuses, a tripwire that catches nothing — is
+ * the result this test exists to see, and is raised as it stands.
+ */
+async function probeCheckEnvironment(): Promise<z.infer<typeof probeResultSchema>> {
+  for (let attempt = 1; attempt < PORT_ATTEMPTS; attempt += 1) {
+    try {
+      return await probeOnce();
+    } catch (error) {
+      if (!isPortConflict(error)) throw error;
+      // The ledger burns the tool name before the collector binds, so a probe
+      // that never reached the target still counts as one until this.
+      resetProbeLedger();
+      await pointDecoyAtAFreshPort();
+    }
+  }
+  return await probeOnce();
 }
 
 describe('the tripwire, end to end', () => {
