@@ -89,6 +89,7 @@ describe('vetit-mcp as a server', () => {
       'compute_risk',
       'fetch_manifest',
       'lookup_advisories',
+      'probe_tool',
       'quarantine_server',
       'scan_descriptions',
       'write_admission',
@@ -121,6 +122,7 @@ describe('vetit-mcp as a server', () => {
       'check_annotations',
       'check_shadowing',
       'fetch_manifest',
+      'probe_tool',
       'quarantine_server',
       'scan_descriptions',
       'write_admission',
@@ -138,14 +140,14 @@ describe('vetit-mcp as a server', () => {
 
   it('marks only the genuinely destructive tools destructive', async () => {
     // The scans write, but additively: they add findings and never remove
-    // one. Rewriting a permission list can undo an admission, which is why
-    // that one is destructive and these are not.
+    // one. Calling a stranger's tool for real, and rewriting a permission
+    // list, are the two that can undo something.
     const { tools } = await client.listTools();
     const destructive = tools
       .filter((tool) => tool.annotations?.destructiveHint === true)
       .map((tool) => tool.name)
       .sort();
-    expect(destructive).toEqual(['write_admission']);
+    expect(destructive).toEqual(['probe_tool', 'write_admission']);
   });
 
   it('publishes descriptions that instruct nobody', async () => {
