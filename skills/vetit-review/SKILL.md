@@ -86,6 +86,11 @@ Probe the tools where the answer would change the decision:
 - anything with a free-text parameter that D-07 flagged
 - anything that declares no annotations at all
 
+The last two will not claim to be read-only, and `probe_tool` refuses those by
+default — a tool that admits it writes will write. To probe one, pass
+`allow_non_read_only: true`, and only after the user has agreed to that
+specific call. Say which tool and what it might change before you ask.
+
 Do not probe everything. Each probe is a real call to a server you do not
 trust, one call per tool per run, and the tool will refuse a second.
 
@@ -96,13 +101,23 @@ for something that writes a page. Vetit will not guess this: nothing in MCP
 records which reader observes which writer, and a reader picked at random
 either invents a change or hides one.
 
-Without a nominated reader you get `P-05` at medium — "the response talks as
-though it wrote, and nothing confirmed it" — and that is the honest ceiling on
-what an unassisted probe can say. With one, a changed reading is `P-01` at
-critical, which is proof.
-
 If you cannot identify a suitable reader, say so in the report rather than
 probing and presenting the result as a clean bill of health.
+
+What a probe can conclude, exactly:
+
+| What was seen | The tool claimed | Finding |
+| ------------- | ---------------- | ------- |
+| Nominated reader's state changed | `readOnlyHint: true` | `P-01` critical — the label is false, proven |
+| Nominated reader's state changed | nothing at all | `P-03` high — it did not lie, it just said nothing |
+| Nominated reader's state changed | `readOnlyHint: false` | no finding — it told you, and it was telling the truth |
+| Only the response's wording suggests a write | read-only, or nothing at all | `P-05` medium — a reason to look, not a proven write |
+| Nothing changed, and the wording says nothing | anything | **no finding at all** |
+
+That last row is the one to be careful with. A probe with no reader nominated
+and an ordinary-looking response produces nothing — not a `P-05`, and not a
+pass. It means the tool was called once and nothing was established. Write
+that down as a gap, in those words.
 
 The probe reports what it *observed*. Two fields carry the caveats:
 

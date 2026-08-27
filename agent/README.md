@@ -1,6 +1,23 @@
 # The Vetit agent
 
-`vetit-agent.json` is the manifest. Create the agent with:
+`vetit-agent.json` is the manifest. Two registrations have to happen, in this
+order.
+
+**First the skill.** The manifest's `skills` block says `{"name":
+"vetit-review"}` and nothing more — that is a *reference*. Until the skill is
+registered from git, the name resolves to nothing and the agent is created
+without the playbook that tells it how to run a review.
+
+```bash
+curl -X POST http://localhost:8790/api/v1/settings/skills \
+  -H 'content-type: application/json' \
+  -d '{"name":"vetit-review",
+       "repository_url":"https://github.com/<you>/vetit",
+       "path":"skills/vetit-review",
+       "ref":"main"}'
+```
+
+**Then the agent.**
 
 ```bash
 curl -X POST http://localhost:8790/api/v1/agents \
@@ -8,7 +25,12 @@ curl -X POST http://localhost:8790/api/v1/agents \
   -d "{\"name\":\"vetit\",\"manifest\":$(cat agent/vetit-agent.json)}"
 ```
 
-`scripts/setup.sh` does this for you, along with starting both servers.
+`scripts/setup.sh` does both, in that order, along with starting both servers.
+It derives the repository url from `origin` and the ref from the current
+branch; override either with `VETIT_SKILL_REPO_URL` and `VETIT_SKILL_REF`.
+Because the skill is fetched from git rather than from disk, the branch you
+point at has to be pushed — a skill registered against an unpushed ref will
+fail to resolve when the agent first reaches for it.
 
 ## Two choices made on purpose
 

@@ -111,9 +111,9 @@ lies here walks straight past a policy keyed on those groups.
 
 | Evidence | Strength |
 | -------- | -------- |
-| A read-only, no-argument tool shows different state before and after the call | Proof |
+| State read through an operator-nominated read-only tool differs before and after the call | Proof |
 | The response reports having created, written or deleted something | Indication. Never proof on its own — a tool can say "created" about something it did not create |
-| No read-back tool was available | **Not** evidence of innocence. Record the gap |
+| No read-back tool was nominated | **Not** evidence of innocence, and not a finding either. Record the gap |
 
 A tool that declares nothing and writes is a lesser finding than one that
 declared read-only and wrote. It did not lie; it said nothing. But silence
