@@ -22,8 +22,13 @@ export interface CleanedSnippet {
 export const SNIPPET_CHARACTER_BUDGET = 120;
 
 /**
- * A ceiling on the rendered result. Neutralising expands the text — 120
- * zero-width characters become 120 visible markers — so the budget above
- * bounds the untrusted content and this bounds what actually gets returned.
+ * The absolute maximum length of `renderedText` — wrapper, truncation mark and
+ * ceiling mark included.
+ *
+ * Neutralising expands the text (120 zero-width characters become 120 visible
+ * markers), so the budget above bounds the untrusted *input* and this bounds
+ * the whole *output*. The space every required marker needs is reserved before
+ * the body is cut, rather than appended afterwards, so `renderedText.length`
+ * is never greater than this number. There is a test asserting exactly that.
  */
 export const RENDERED_CHARACTER_CEILING = 600;

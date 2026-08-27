@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cleanEmptySnippet,
   cleanUntrustedSnippet,
+  RENDERED_CHARACTER_CEILING,
   SNIPPET_CHARACTER_BUDGET,
 } from '../../../src/shared/redaction/index.js';
 
@@ -178,13 +179,126 @@ describe('length', () => {
   it('caps the rendered result even when every character expands', () => {
     const result = cleanUntrustedSnippet({ text: '\u200B'.repeat(200) });
     expect(result.renderedText).toContain('\u27EACEILING_REACHED\u27EB');
-    expect(result.renderedText.length).toBeLessThan(700);
+    expect(result.renderedText.length).toBeLessThanOrEqual(
+      RENDERED_CHARACTER_CEILING,
+    );
+  });
+
+  it('never exceeds the ceiling, whatever the input expands into', () => {
+    // The ceiling used to exclude the wrapper, the ceiling mark and the
+    // truncation mark, all of which were appended after the cut \u2014 so every
+    // result that hit the ceiling was longer than the constant documenting it.
+    const worstCases = [
+      '\u200B'.repeat(500),
+      '<'.repeat(500),
+      '\u202E'.repeat(500),
+      '\u27EA'.repeat(500),
+      '<!--'.repeat(200),
+      'a'.repeat(500),
+    ];
+    for (const text of worstCases) {
+      const result = cleanUntrustedSnippet({ text });
+      expect(result.renderedText.length).toBeLessThanOrEqual(
+        RENDERED_CHARACTER_CEILING,
+      );
+    }
+  });
+
+  it('keeps both markers when the source was truncated and the body capped', () => {
+    const result = cleanUntrustedSnippet({ text: '\u200B'.repeat(500) });
+    expect(result.renderedText).toContain('\u27EACEILING_REACHED\u27EB');
+    expect(result.renderedText).toContain('\u27EATRUNCATED\u27EB');
+    expect(result.renderedText.endsWith(' \u27E7')).toBe(true);
+    expect(result.renderedText.length).toBeLessThanOrEqual(
+      RENDERED_CHARACTER_CEILING,
+    );
+  });
+
+  it('never cuts through a marker it generated', () => {
+    // A cut landing inside \u27EAZWSP\u27EB would leave a dangling opener, in a snippet
+    // whose whole point is that its markers can be trusted.
+    for (const text of ['\u200B'.repeat(500), '\u202E'.repeat(500), '<'.repeat(500)]) {
+      const { renderedText } = cleanUntrustedSnippet({ text });
+      const opens = renderedText.split('\u27EA').length - 1;
+      const closes = renderedText.split('\u27EB').length - 1;
+      expect(opens).toBe(closes);
+    }
   });
 
   it('honours a tighter budget when one is asked for', () => {
     const result = cleanUntrustedSnippet({ text: 'abcdefghij', characterBudget: 4 });
     expect(result.renderedText).toContain('abcd');
     expect(result.renderedText).not.toContain('efgh');
+  });
+});
+
+describe('the budget cannot be raised, only lowered', () => {
+  // SNIPPET_CHARACTER_BUDGET is a security bound, not a default. The option
+  // used to be taken as given, so a caller could hand over more untrusted text
+  // than §4 permits — or, with Infinity or NaN, all of it.
+  function untrustedCharactersIn(rendered: string, character: string): number {
+    return rendered.split(character).length - 1;
+  }
+
+  const longText = 'x'.repeat(500);
+
+  it('clamps a budget larger than the mandatory bound', () => {
+    const result = cleanUntrustedSnippet({ text: longText, characterBudget: 400 });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(
+      SNIPPET_CHARACTER_BUDGET,
+    );
+    expect(result.wasTruncated).toBe(true);
+  });
+
+  it('refuses Infinity, which used to disable truncation entirely', () => {
+    const result = cleanUntrustedSnippet({
+      text: longText,
+      characterBudget: Number.POSITIVE_INFINITY,
+    });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(
+      SNIPPET_CHARACTER_BUDGET,
+    );
+    expect(result.wasTruncated).toBe(true);
+  });
+
+  it('refuses NaN, which used to report wasTruncated false and return it all', () => {
+    const result = cleanUntrustedSnippet({ text: longText, characterBudget: Number.NaN });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(
+      SNIPPET_CHARACTER_BUDGET,
+    );
+    expect(result.wasTruncated).toBe(true);
+  });
+
+  it('refuses a negative budget', () => {
+    const result = cleanUntrustedSnippet({ text: longText, characterBudget: -1 });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(
+      SNIPPET_CHARACTER_BUDGET,
+    );
+  });
+
+  it('refuses a fractional budget', () => {
+    const result = cleanUntrustedSnippet({ text: longText, characterBudget: 12.5 });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(
+      SNIPPET_CHARACTER_BUDGET,
+    );
+  });
+
+  it('accepts a budget of zero, which asks for no untrusted text at all', () => {
+    const result = cleanUntrustedSnippet({ text: longText, characterBudget: 0 });
+    expect(untrustedCharactersIn(result.renderedText, 'x')).toBe(0);
+    expect(result.wasTruncated).toBe(true);
+  });
+
+  it('never returns more untrusted characters than the bound, for any budget', () => {
+    for (const characterBudget of [
+      0, 1, 119, 120, 121, 1000, -5, 0.5, Number.NaN,
+      Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY,
+    ]) {
+      const result = cleanUntrustedSnippet({ text: longText, characterBudget });
+      expect(untrustedCharactersIn(result.renderedText, 'x')).toBeLessThanOrEqual(
+        SNIPPET_CHARACTER_BUDGET,
+      );
+    }
   });
 });
 
