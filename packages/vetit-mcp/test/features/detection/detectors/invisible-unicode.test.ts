@@ -59,3 +59,45 @@ describe('D-02 invisibleUnicode — stays quiet', () => {
     expect(run({ detector, text: 'ドキュメントを検索します。' })).toEqual([]);
   });
 });
+
+describe('D-02 invisibleUnicode — control characters', () => {
+  // These were missing entirely. A backspace or an escape can rewrite what a
+  // terminal shows, and JSON carries them escaped quite happily, so a
+  // description could manipulate the evidence a reviewer reads.
+  //
+  // Written as code points, not pasted: a literal control character in a
+  // test file is the very thing this detector exists to find.
+  it.each([
+    ['backspace', 0x08],
+    ['escape', 0x1b],
+    ['vertical tab', 0x0b],
+    ['form feed', 0x0c],
+    ['null', 0x00],
+    ['device control', 0x11],
+    ['a C1 control', 0x90],
+  ])('fires on %s', (_name, codePoint) => {
+    const text = `Searches${String.fromCodePoint(codePoint)} the index.`;
+    const findings = run({ detector, text });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe('critical');
+  });
+
+  it('names the backspace rather than only its code point', () => {
+    const text = `a${String.fromCodePoint(0x08)}b`;
+    expect(run({ detector, text })[0]?.message).toContain('backspace');
+  });
+
+  it('stays quiet on a lone newline or tab, which are ordinary here', () => {
+    expect(run({ detector, text: 'Line one.\nLine two.\n\tIndented.' })).toEqual([]);
+  });
+
+  it('stays quiet on CRLF, so Windows-authored servers are not all critical', () => {
+    expect(run({ detector, text: 'Line one.\r\nLine two.\r\n' })).toEqual([]);
+  });
+
+  it('fires on a lone carriage return, which is how a line gets overwritten', () => {
+    const findings = run({ detector, text: 'Harmless text\rOVERWRITTEN' });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toContain('carriage return');
+  });
+});

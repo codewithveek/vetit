@@ -65,9 +65,22 @@ export interface DetectionRun {
 }
 
 /**
- * Every tool, every detector, in a fixed order. `installedToolNames` defaults
- * to the manifest's own tools so that a shadowing check still has something to
- * compare against when the caller does not supply a workspace list.
+ * Every tool, every detector, in a fixed order.
+ *
+ * `installedToolNames` defaults to empty, and the comment here used to claim
+ * it defaulted to the manifest's own tools. The comment was wrong, not the
+ * code, and it is the comment that has been fixed.
+ *
+ * Defaulting to the manifest's own tools would mean a tool that mentions a
+ * sibling — "call `list_spaces` first", which honest servers write all the
+ * time — is reported as cross-server shadowing at critical severity. D-09 is
+ * about a server naming tools belonging to *other* servers; a server
+ * describing itself is not that, and forty points of risk for it would be a
+ * false alarm on exactly the servers worth admitting.
+ *
+ * With no workspace list there is genuinely nothing to compare against, so the
+ * installed-name signal does not run. `check_shadowing` takes the list as an
+ * argument for that reason, and reports it as one of the detectors it ran.
  */
 export function runDetectors(options: RunDetectorsOptions): DetectionRun {
   return runDetectorsWithInstalled({ ...options, installedToolNames: [] });

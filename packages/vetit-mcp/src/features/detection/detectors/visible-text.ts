@@ -1,3 +1,8 @@
+import {
+  buildShoutedBlockPattern,
+  buildShoutedTagPattern,
+} from './tag-syntax.js';
+
 /**
  * The part of a description a human actually sees.
  *
@@ -12,6 +17,11 @@
  * does, because the question being asked is different: redaction asks "what is
  * safe to show?", and this asks "what did the reader actually see?"
  *
+ * The tag patterns are shared with D-01. They were near-copies, and an
+ * attribute was enough to slip past both at once: `<IMPORTANT role="note">`
+ * was neither reported as an instruction block nor removed from here, so the
+ * payload inside it counted as documentation for the parameter it named.
+ *
  * Pure text in, pure text out. No detector state, no ordering assumptions.
  */
 
@@ -22,18 +32,11 @@ const HIDDEN_CONTAINERS: readonly RegExp[] = [
   /\[(?:\/\/|comment)\]:\s*(?:#|<>)[^\n]*/gi,
 ];
 
-/** `<IMPORTANT> … </IMPORTANT>` and friends: the block and everything in it. */
-const SHOUTED_BLOCK = /<([A-Z][A-Z0-9_]{2,})>[\s\S]*?(?:<\/\1>|$)/g;
-
-/** A lone shouted tag with no closing partner still hides what follows it. */
-const TRAILING_SHOUTED_TAG = /<\/?[A-Z][A-Z0-9_]{2,}>/g;
-
 export function extractVisibleText(text: string): string {
   let visible = text;
   for (const container of HIDDEN_CONTAINERS) {
     visible = visible.replaceAll(container, ' ');
   }
-  visible = visible.replaceAll(SHOUTED_BLOCK, ' ');
-  visible = visible.replaceAll(TRAILING_SHOUTED_TAG, ' ');
-  return visible;
+  visible = visible.replaceAll(buildShoutedBlockPattern(), ' ');
+  return visible.replaceAll(buildShoutedTagPattern(), ' ');
 }
