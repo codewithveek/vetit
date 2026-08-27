@@ -89,9 +89,29 @@ Probe the tools where the answer would change the decision:
 Do not probe everything. Each probe is a real call to a server you do not
 trust, one call per tool per run, and the tool will refuse a second.
 
-The probe reports what it *observed*. Read the `caveat` field: when no
-read-back tool was available, a write could have happened unseen, and that is a
-gap in the evidence rather than a clean result.
+**Nominate a reader, or the probe proves nothing.** Pass `read_back_tool`
+naming a read-only tool on the same server that reports state the probed tool
+would change — `list_spaces` for something that writes a space, `list_pages`
+for something that writes a page. Vetit will not guess this: nothing in MCP
+records which reader observes which writer, and a reader picked at random
+either invents a change or hides one.
+
+Without a nominated reader you get `P-05` at medium — "the response talks as
+though it wrote, and nothing confirmed it" — and that is the honest ceiling on
+what an unassisted probe can say. With one, a changed reading is `P-01` at
+critical, which is proof.
+
+If you cannot identify a suitable reader, say so in the report rather than
+probing and presenting the result as a clean bill of health.
+
+The probe reports what it *observed*. Two fields carry the caveats:
+
+- `read_back` gives the status of each read separately. A pre-read that
+  succeeded and a post-read that failed is not a comparison, and `comparable`
+  will be false.
+- `egress.status` is `observed` or `not_performed`. `not_performed` means the
+  target could not reach the tripwire collector, so silence there says nothing
+  at all. Do not read it as no data leaving.
 
 ### 6. Cross-check
 

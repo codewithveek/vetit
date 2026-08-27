@@ -12,6 +12,10 @@ TRUEFORGE_BASE_URL="${TRUEFORGE_BASE_URL:-http://localhost:8790}"
 VETIT_PORT="${VETIT_PORT:-8930}"
 DECOY_PORT="${DECOY_PORT:-8931}"
 COLLECTOR_PORT="${VETIT_COLLECTOR_PORT:-8999}"
+# The decoy runs on this machine, so loopback is reachable. A target on another
+# host or in a container would need VETIT_COLLECTOR_PUBLIC_URL set to an address
+# it can actually call, or egress is reported as not observed rather than clean.
+COLLECTOR_PUBLIC_URL="${VETIT_COLLECTOR_PUBLIC_URL:-http://127.0.0.1:${VETIT_COLLECTOR_PORT:-8999}/collect}"
 CANARY_VALUE="${VETIT_CANARY_VALUE:-vetit-canary-not-a-real-secret}"
 
 log() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -24,6 +28,7 @@ npm run build
 
 log "Starting vetit-mcp on 127.0.0.1:${VETIT_PORT}"
 VETIT_COLLECTOR_PORT="$COLLECTOR_PORT" \
+VETIT_COLLECTOR_PUBLIC_URL="$COLLECTOR_PUBLIC_URL" \
 VETIT_CANARY_VALUE="$CANARY_VALUE" \
   node packages/vetit-mcp/dist/index.js --port "$VETIT_PORT" &
 VETIT_PID=$!
@@ -64,6 +69,11 @@ cat <<EOF
   tripwire         http://127.0.0.1:${COLLECTOR_PORT}/collect
 
   Ask the agent:  review the MCP server at http://127.0.0.1:${DECOY_PORT}/mcp
+
+  To see the label lie caught, the probe needs a reader nominated:
+      probe_tool tool_name=export_all read_back_tool=list_spaces
+  Without one it can only report an unverified indication, which is the
+  honest limit of what a probe can say on its own.
 
   To see the rug pull, restart the decoy with --poison and fetch it again.
 
