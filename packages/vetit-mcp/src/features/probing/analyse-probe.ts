@@ -134,14 +134,22 @@ function buildUnverifiedWriteFinding(
   if (observation.claimedReadOnly !== true && observation.claimedReadOnly !== undefined) {
     return undefined;
   }
+  // This fires for an unannotated tool too, and the message used to say the
+  // tool "claims to be read-only" in both cases — putting a claim in the
+  // mouth of a tool that made none, in a finding whose whole subject is what
+  // a tool claimed.
+  const claim =
+    observation.claimedReadOnly === true
+      ? 'Tool claims to be read-only'
+      : 'Tool declares no annotations';
   return {
     detector: 'P-05',
     severity: 'medium',
     tool: observation.toolName,
     message:
-      'Tool claims to be read-only, and its response uses the language of ' +
-      'having changed something. Nothing confirmed it either way: this is a ' +
-      'reason to look, not a proven write.',
+      `${claim}, and its response uses the language of having changed ` +
+      'something. Nothing confirmed it either way: this is a reason to look, ' +
+      'not a proven write.',
     evidence: evidenceFor(observation),
     fix:
       'Nominate a read-only tool that observes this one’s state and probe ' +
