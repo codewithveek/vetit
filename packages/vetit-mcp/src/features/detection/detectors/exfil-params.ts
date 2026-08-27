@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { DetectorContext, DetectorDefinition, DraftFinding } from '../finding.types.js';
+import { escapeForRegExp } from './escape-for-regexp.js';
 import { buildEvidence } from './build-evidence.js';
 import { extractVisibleText } from './visible-text.js';
 
@@ -55,15 +56,41 @@ function acceptsFreeText(property: unknown): boolean {
   return false;
 }
 
-function readPropertyDescription(property: unknown): string | undefined {
+/** At least one letter or digit. A description of `""` or `"."` explains nothing. */
+const MEANINGFUL_TEXT = /[\p{L}\p{N}]/u;
+
+/**
+ * A property counts as documented only if its description says something.
+ *
+ * Any defined value used to be enough, so `description: ""` — or a space, or a
+ * full stop — silently suppressed a high-severity finding. A publisher could
+ * switch off the undocumented-parameter check without documenting anything.
+ */
+function hasOwnDescription(property: unknown): boolean {
   const parsed = propertySchema.safeParse(property);
-  return parsed.success ? parsed.data.description : undefined;
+  if (!parsed.success) return false;
+  const description = parsed.data.description ?? '';
+  return MEANINGFUL_TEXT.test(description.trim());
 }
 
+/**
+ * The name has to appear as a name, not as a run of letters inside a word.
+ *
+ * A plain substring search made a parameter called `id` documented by the word
+ * "provides", and `note` documented by "notes that". Short and common names
+ * are exactly the ones an exfiltration field would use, so this was a hole
+ * shaped like the attack.
+ *
+ * Boundaries exclude word characters and hyphens, since tool parameters are
+ * conventionally `snake_case` or `kebab-case` and `_` is already a word
+ * character.
+ */
 function isMentionedVisibly(parameterName: string, description: string): boolean {
-  return extractVisibleText(description)
-    .toLowerCase()
-    .includes(parameterName.toLowerCase());
+  const boundedName = new RegExp(
+    String.raw`(?<![\w-])${escapeForRegExp(parameterName)}(?![\w-])`,
+    'iu',
+  );
+  return boundedName.test(extractVisibleText(description));
 }
 
 function buildMessage(parameterName: string): string {
@@ -72,7 +99,7 @@ function buildMessage(parameterName: string): string {
     : '';
   return (
     `Parameter "${parameterName}" takes free text, has no description of its ` +
-    `own, and is never mentioned in the tool description.${suffix}`
+    `own, and is never mentioned in the visible tool description.${suffix}`
   );
 }
 
@@ -86,7 +113,7 @@ export const exfilParamsDetector: DetectorDefinition = {
     const findings: DraftFinding[] = [];
     for (const [parameterName, property] of Object.entries(properties)) {
       if (!acceptsFreeText(property)) continue;
-      if (readPropertyDescription(property) !== undefined) continue;
+      if (hasOwnDescription(property)) continue;
       if (isMentionedVisibly(parameterName, text)) continue;
       findings.push({
         detector: 'D-07',

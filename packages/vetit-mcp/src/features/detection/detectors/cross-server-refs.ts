@@ -1,4 +1,5 @@
 import type { DetectorContext, DetectorDefinition, DraftFinding } from '../finding.types.js';
+import { escapeForRegExp } from './escape-for-regexp.js';
 import { buildEvidence, excerptAround } from './build-evidence.js';
 
 /**
@@ -18,49 +19,67 @@ import { buildEvidence, excerptAround } from './build-evidence.js';
  * A tool naming *itself* is not a finding. Descriptions do that all the time.
  */
 
-const QUALIFIED_REFERENCE = /\b([a-z][\w-]{2,})[.:]{1,2}([a-z][\w-]{2,})\b/gi;
+/** A dotted or colon-separated chain: `github.create_issue`, `docs.example.com`. */
+const QUALIFIED_CHAIN = /\b[a-z][\w-]{2,}(?:[.:]{1,2}[a-z][\w-]+)+\b/gi;
 
-/** Words that look like a qualified tool reference and are not one. */
-const COMMON_FALSE_POSITIVES: ReadonlySet<string> = new Set([
-  'e.g',
-  'i.e',
-  'etc',
-  'json',
-  'yaml',
-  'http',
-  'https',
-  'www',
-  'node',
-  'npm',
-  'github.com',
-  'example.com',
+const SEPARATOR = /[.:]{1,2}/;
+
+/** URLs are D-06's finding. Their hostnames are not tool references. */
+const URL_PATTERN = /\bhttps?:\/\/\S+/gi;
+
+/**
+ * The last segment decides.
+ *
+ * The rule used to be "the member must be longer than four characters and
+ * contain an underscore", which was a lazy way of excluding `manifest.json`
+ * and threw away every ordinary name with it — `filesystem.read`,
+ * `github.search`, `server.lookup` all went unreported. What actually
+ * distinguishes a file or a host from a tool is its last segment, so that is
+ * what is checked.
+ */
+const FILE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'json', 'md', 'markdown', 'txt', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+  'xml', 'html', 'htm', 'csv', 'tsv', 'log', 'lock', 'js', 'mjs', 'cjs', 'ts',
+  'tsx', 'jsx', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'cpp', 'php', 'sh',
+  'bash', 'zsh', 'ps1', 'sql', 'css', 'scss', 'svg', 'png', 'jpg', 'jpeg',
+  'gif', 'webp', 'pdf', 'zip', 'gz', 'tar', 'env', 'pem', 'crt', 'lockb',
 ]);
 
-function isPlausibleToolReference(qualifier: string, member: string): boolean {
-  const joined = `${qualifier}.${member}`.toLowerCase();
-  if (COMMON_FALSE_POSITIVES.has(joined)) return false;
-  if (COMMON_FALSE_POSITIVES.has(qualifier.toLowerCase())) return false;
-  // A file extension is not a tool: `manifest.json`, `README.md`.
-  return member.length > 4 && member.includes('_');
+const TOP_LEVEL_DOMAINS: ReadonlySet<string> = new Set([
+  'com', 'org', 'net', 'io', 'dev', 'ai', 'co', 'uk', 'us', 'eu', 'app', 'gg',
+  'me', 'info', 'biz', 'edu', 'gov', 'mil', 'int', 'xyz', 'cloud', 'tech',
+  'run', 'so', 'to', 'ly', 'fm', 'tv', 'local', 'localhost', 'example',
+]);
+
+const COMMON_ABBREVIATIONS: ReadonlySet<string> = new Set(['e.g', 'i.e', 'etc']);
+
+function isPlausibleToolReference(chain: string): boolean {
+  const lower = chain.toLowerCase();
+  if (COMMON_ABBREVIATIONS.has(lower)) return false;
+  const segments = lower.split(SEPARATOR).filter((segment) => segment.length > 0);
+  const last = segments.at(-1) ?? '';
+  return !FILE_EXTENSIONS.has(last) && !TOP_LEVEL_DOMAINS.has(last);
 }
 
 function findQualifiedReferences(
   text: string,
   context: DetectorContext,
 ): DraftFinding[] {
+  // Blanking URLs rather than removing them keeps every index aligned with the
+  // original text, so the evidence still points where the reader will look.
+  const withoutUrls = text.replaceAll(URL_PATTERN, (url) => ' '.repeat(url.length));
   const findings: DraftFinding[] = [];
   const seen = new Set<string>();
-  for (const match of text.matchAll(QUALIFIED_REFERENCE)) {
-    const qualifier = match[1] ?? '';
-    const member = match[2] ?? '';
-    if (!isPlausibleToolReference(qualifier, member) || seen.has(match[0])) continue;
-    seen.add(match[0]);
+  for (const match of withoutUrls.matchAll(QUALIFIED_CHAIN)) {
+    const chain = match[0];
+    if (!isPlausibleToolReference(chain) || seen.has(chain)) continue;
+    seen.add(chain);
     findings.push({
       detector: 'D-09',
       severity: 'critical',
       tool: context.tool.name,
       message:
-        `Description names "${match[0]}", which reads as a tool belonging to ` +
+        `Description names "${chain}", which reads as a tool belonging to ` +
         'another server. A server has no business directing calls meant for ' +
         'one you already trust.',
       evidence: buildEvidence({
@@ -76,31 +95,55 @@ function findQualifiedReferences(
   return findings;
 }
 
+interface NamedMatch {
+  readonly name: string;
+  readonly index: number;
+}
+
+/**
+ * An installed name counts when it appears as a name, not inside a word.
+ *
+ * A plain substring search meant an installed tool called `read` made
+ * "Reads documentation" a critical finding — forty points of risk, on an
+ * honest server, from a coincidence of spelling. Boundaries exclude the
+ * characters a tool name is made of, so a name inside a longer identifier does
+ * not count either; that case is the qualified-reference signal's job.
+ */
+function findInstalledName(text: string, name: string): NamedMatch | undefined {
+  // A separator only disqualifies the match when something name-shaped is on
+  // the other side of it. Otherwise `post_message.` ending a sentence would be
+  // read as part of a longer identifier and missed, while `filesystem.read`
+  // and `read.json` are still correctly left to the qualified-reference signal.
+  const pattern = new RegExp(
+    String.raw`(?<![\w-])(?<![\w-][.:])${escapeForRegExp(name)}(?![\w-])(?![.:][\w-])`,
+    'iu',
+  );
+  const match = pattern.exec(text);
+  return match === null ? undefined : { name, index: match.index };
+}
+
 function findInstalledToolNames(
   text: string,
   context: DetectorContext,
 ): DraftFinding[] {
-  const lowerText = text.toLowerCase();
-  const named = context.installedToolNames.filter(
-    (name) => name !== context.tool.name && lowerText.includes(name.toLowerCase()),
-  );
-  if (named.length === 0) return [];
-  const firstName = named[0] ?? '';
+  const matches = context.installedToolNames
+    .filter((name) => name !== context.tool.name)
+    .map((name) => findInstalledName(text, name))
+    .filter((match): match is NamedMatch => match !== undefined);
+  if (matches.length === 0) return [];
+  const names = matches.map((match) => match.name);
   return [
     {
       detector: 'D-09',
       severity: 'critical',
       tool: context.tool.name,
       message:
-        `Description names ${String(named.length)} tool(s) already enabled in ` +
-        `this workspace: ${named.join(', ')}.`,
+        `Description names ${String(names.length)} tool(s) already enabled in ` +
+        `this workspace: ${names.join(', ')}.`,
       evidence: buildEvidence({
         context,
         pointerSegments: ['description'],
-        snippetText: excerptAround({
-          text,
-          matchIndex: lowerText.indexOf(firstName.toLowerCase()),
-        }),
+        snippetText: excerptAround({ text, matchIndex: matches[0]?.index ?? 0 }),
       }),
       fix:
         'Compare what this description says about those tools against what ' +

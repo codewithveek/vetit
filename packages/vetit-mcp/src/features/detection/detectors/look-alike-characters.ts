@@ -8,31 +8,52 @@ import { buildEvidence } from './build-evidence.js';
  * and no amount of careful reading will tell them apart. Used to impersonate a
  * tool a workspace already trusts.
  *
- * Two signals, either of which fires:
+ * Three signals, any of which fires:
  *
- *  - a character from the known confusable table, which is the attack itself
  *  - a name that mixes ASCII letters with letters from another script, which
- *    is the shape the attack takes even when the character is not in the table
+ *    is the shape the attack takes
+ *  - a confusable character *in that mixed context*, which names the trick
+ *    precisely
+ *  - a name whose look-alike skeleton matches a tool already enabled here,
+ *    which is impersonation proven rather than suspected, and which is the one
+ *    case worth firing on even when the name is entirely non-ASCII
  *
- * A name written entirely in another script is not flagged. It is unusual, but
- * it impersonates nothing, and calling it an attack would be crying wolf.
+ * A name written wholly in another script and resembling nothing is not
+ * flagged. It is unusual, it impersonates nothing, and calling it an attack is
+ * how a detector gets switched off.
  */
 
 /** Characters that render as an ASCII letter but are not one. */
 const CONFUSABLES: ReadonlyMap<string, string> = new Map([
-  ['\u0430', 'a'], ['\u0435', 'e'], ['\u043E', 'o'], ['\u0440', 'p'],
-  ['\u0441', 'c'], ['\u0443', 'y'], ['\u0445', 'x'], ['\u0456', 'i'],
-  ['\u0455', 's'], ['\u0458', 'j'], ['\u04BB', 'h'], ['\u0501', 'd'],
-  ['\u03BF', 'o'], ['\u03B1', 'a'], ['\u03BD', 'v'], ['\u03C1', 'p'],
-  ['\u03C5', 'u'], ['\u0261', 'g'], ['\u1D0F', 'o'], ['\uFF41', 'a'],
+  ['а', 'a'], ['е', 'e'], ['о', 'o'], ['р', 'p'],
+  ['с', 'c'], ['у', 'y'], ['х', 'x'], ['і', 'i'],
+  ['ѕ', 's'], ['ј', 'j'], ['һ', 'h'], ['ԁ', 'd'],
+  ['ο', 'o'], ['α', 'a'], ['ν', 'v'], ['ρ', 'p'],
+  ['υ', 'u'], ['ɡ', 'g'], ['ᴏ', 'o'], ['ａ', 'a'],
 ]);
 
 const ASCII_LETTER = /[A-Za-z]/;
-const NON_ASCII_LETTER = /\P{ASCII}/u;
+
+/**
+ * Letters from another script — not merely anything non-ASCII.
+ *
+ * This used to be `\P{ASCII}`, which matches emoji, punctuation, combining
+ * marks and symbols. A tool honestly named `search_🔍` was reported as a
+ * mixed-script impersonation attempt at high severity, which is nonsense: an
+ * emoji resembles no ASCII letter and impersonates nothing.
+ */
+const NON_ASCII_LETTER = /(?![\p{ASCII}])\p{L}/u;
+
+/** What the name would read as if every look-alike were the letter it apes. */
+function toSkeleton(name: string): string {
+  return Array.from(name)
+    .map((character) => CONFUSABLES.get(character) ?? character)
+    .join('')
+    .toLowerCase();
+}
 
 interface NameFinding {
   readonly message: string;
-  readonly snippetText: string;
 }
 
 function describeConfusables(name: string): NameFinding | undefined {
@@ -47,7 +68,6 @@ function describeConfusables(name: string): NameFinding | undefined {
     .join(', ');
   return {
     message: `Tool name uses look-alike characters from another alphabet: ${detail}.`,
-    snippetText: name,
   };
 }
 
@@ -57,8 +77,44 @@ function describeMixedScript(name: string): NameFinding | undefined {
     message:
       'Tool name mixes ASCII letters with letters from another script, which ' +
       'is how a name is made to read like one a workspace already trusts.',
-    snippetText: name,
   };
+}
+
+/**
+ * The strongest signal, and the only one that survives a wholly non-ASCII name.
+ *
+ * A name written entirely in Cyrillic homoglyphs impersonates nothing on its
+ * own — but if flattening its look-alikes produces the name of a tool already
+ * enabled here, it is impersonating that tool, and the mixed-script rule would
+ * never have caught it.
+ */
+function describeSkeletonCollision(
+  name: string,
+  installedToolNames: readonly string[],
+): NameFinding | undefined {
+  const skeleton = toSkeleton(name);
+  if (skeleton === name.toLowerCase()) return undefined;
+  const impersonated = installedToolNames.find(
+    (installed) => installed.toLowerCase() === skeleton,
+  );
+  if (impersonated === undefined) return undefined;
+  return {
+    message:
+      `Tool name is a look-alike of "${impersonated}", a tool already enabled ` +
+      'in this workspace. Flattening its look-alike characters produces that ' +
+      'name exactly.',
+  };
+}
+
+function describeName(
+  name: string,
+  context: DetectorContext,
+): NameFinding | undefined {
+  const collision = describeSkeletonCollision(name, context.installedToolNames);
+  if (collision !== undefined) return collision;
+  // Both remaining signals need an ASCII letter to be impersonating anything.
+  if (!ASCII_LETTER.test(name)) return undefined;
+  return describeConfusables(name) ?? describeMixedScript(name);
 }
 
 export const lookAlikeCharactersDetector: DetectorDefinition = {
@@ -67,7 +123,7 @@ export const lookAlikeCharactersDetector: DetectorDefinition = {
   severity: 'high',
   reads: 'name',
   run: (text, context: DetectorContext): readonly DraftFinding[] => {
-    const described = describeConfusables(text) ?? describeMixedScript(text);
+    const described = describeName(text, context);
     if (described === undefined) return [];
     return [
       {
@@ -78,7 +134,7 @@ export const lookAlikeCharactersDetector: DetectorDefinition = {
         evidence: buildEvidence({
           context,
           pointerSegments: ['name'],
-          snippetText: described.snippetText,
+          snippetText: text,
         }),
         fix:
           'Compare this name against the tools already enabled in the ' +

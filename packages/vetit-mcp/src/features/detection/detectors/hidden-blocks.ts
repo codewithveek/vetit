@@ -4,6 +4,7 @@ import type {
   DraftFinding,
 } from '../finding.types.js';
 import { buildEvidence, excerptAround } from './build-evidence.js';
+import { buildTagPattern } from './tag-syntax.js';
 
 /**
  * D-01 — text hidden inside a container the reader never sees.
@@ -58,7 +59,8 @@ const KNOWN_MARKUP_TAGS: ReadonlySet<string> = new Set([
   'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TD', 'TR', 'TH', 'DIV', 'SPAN', 'IMG',
 ]);
 
-const TAG_PATTERN = /<\/?([A-Za-z][\w.-]*)\s*\/?>/g;
+/** Shared with the visible-text helper. Attributes included. */
+const TAG_PATTERN = buildTagPattern();
 
 const FIX =
   'Read the block in the manifest file and decide whether the server has any ' +
@@ -103,7 +105,8 @@ function findInstructionTags(
   const findings: DraftFinding[] = [];
   const seen = new Set<string>();
   for (const match of text.matchAll(TAG_PATTERN)) {
-    const tagName = match[1] ?? '';
+    // Group 1 is the closing slash; group 2 is the name. See tag-syntax.ts.
+    const tagName = match[2] ?? '';
     if (!isInstructionTag(tagName) || seen.has(tagName.toUpperCase())) continue;
     seen.add(tagName.toUpperCase());
     findings.push({
