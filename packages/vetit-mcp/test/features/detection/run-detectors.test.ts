@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  runDetectors,
-  runDetectorsWithInstalled,
-} from '../../../src/features/detection/index.js';
+import { runDetectors } from '../../../src/features/detection/index.js';
 import type { ManifestTool, StoredManifest } from '../../../src/features/manifest/index.js';
 
 /**
@@ -58,21 +55,9 @@ function detectorsFired(
   ];
 }
 
-describe('the default runner', () => {
-  it('does not treat a tool naming its own sibling as cross-server shadowing', () => {
-    // An honest server writes "call list_spaces first" all the time. Defaulting
-    // the installed list to the manifest's own tools would make that a critical
-    // finding worth forty points of risk — a false alarm on exactly the servers
-    // worth admitting.
-    const run = runDetectors({
-      manifest: manifestOf([siblingReference, listSpaces]),
-      manifestPath: '/tmp/m.json',
-    });
-    expect(detectorsFired(run.findings, 'get_page')).not.toContain('D-09');
-  });
-
+describe('the shadowing context is always stated', () => {
   it('runs the installed-name signal when a workspace list is supplied', () => {
-    const run = runDetectorsWithInstalled({
+    const run = runDetectors({
       manifest: manifestOf([siblingReference]),
       manifestPath: '/tmp/m.json',
       installedToolNames: ['list_spaces'],
@@ -80,12 +65,34 @@ describe('the default runner', () => {
     expect(detectorsFired(run.findings, 'get_page')).toContain('D-09');
   });
 
-  it('numbers findings in a stable order whichever runner is used', () => {
+  it('switches the signal off when the caller says there is no list', () => {
+    const run = runDetectors({
+      manifest: manifestOf([siblingReference, listSpaces]),
+      manifestPath: '/tmp/m.json',
+      installedToolNames: [],
+    });
+    expect(detectorsFired(run.findings, 'get_page')).not.toContain('D-09');
+  });
+
+  it('would flag a tool naming its own sibling, which is why no default does that', () => {
+    // Passing the manifest's own tools — the default the runner deliberately
+    // does not apply — turns "call list_spaces first", which honest servers
+    // write constantly, into a critical finding worth forty points of risk.
+    // Kept as a test rather than a comment so the reasoning stays checkable.
     const manifest = manifestOf([siblingReference, listSpaces]);
-    const first = runDetectors({ manifest, manifestPath: '/tmp/m.json' });
-    const second = runDetectors({ manifest, manifestPath: '/tmp/m.json' });
-    expect(second.findings.map((finding) => finding.id)).toEqual(
-      first.findings.map((finding) => finding.id),
+    const run = runDetectors({
+      manifest,
+      manifestPath: '/tmp/m.json',
+      installedToolNames: manifest.tools.map((tool) => tool.name),
+    });
+    expect(detectorsFired(run.findings, 'get_page')).toContain('D-09');
+  });
+
+  it('numbers findings in a stable order', () => {
+    const manifest = manifestOf([siblingReference, listSpaces]);
+    const options = { manifest, manifestPath: '/tmp/m.json', installedToolNames: [] };
+    expect(runDetectors(options).findings.map((finding) => finding.id)).toEqual(
+      runDetectors(options).findings.map((finding) => finding.id),
     );
   });
 });

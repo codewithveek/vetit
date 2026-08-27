@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDecoyApp } from '../../../vetit-decoy-mcp/src/decoy-server.js';
 import {
   computeRisk,
-  runDetectorsWithInstalled,
+  runDetectors,
   type DetectionRun,
 } from '../../src/features/detection/index.js';
 import {
@@ -62,7 +62,7 @@ beforeAll(async () => {
     connectorName: undefined,
   });
   const manifest = await readStoredManifest(summary.manifest_id);
-  detection = runDetectorsWithInstalled({
+  detection = runDetectors({
     manifest,
     manifestPath: await resolveManifestPath(summary.manifest_id),
     installedToolNames: ['post_message', 'create_issue', 'read_file'],
