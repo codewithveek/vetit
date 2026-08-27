@@ -70,7 +70,42 @@ export async function writeStoredManifest(
   return path;
 }
 
-/** Reads a manifest back off disk, checked rather than trusted. */
+/**
+ * The record exists but is not the record it should be.
+ *
+ * Kept apart from "no such manifest" because the two mean opposite things: one
+ * says fetch it, the other says something is wrong with what is on disk and
+ * nothing downstream should treat it as a review.
+ */
+export class ManifestStorageError extends Error {
+  constructor(manifestId: string, reason: string) {
+    super(
+      `The manifest stored for ${manifestId} could not be trusted: ${reason}. ` +
+        'Fetch the target again rather than reviewing this file.',
+    );
+    this.name = 'ManifestStorageError';
+  }
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
+}
+
+/**
+ * Reads a manifest back off disk, checked rather than trusted.
+ *
+ * Only a missing file means "not found". Everything else — unreadable, not
+ * JSON, not a manifest, or a manifest belonging to a *different* id — is a
+ * storage problem and says so. The id check is the one review asked for and it
+ * matters more than it looks: admission pairs this record with a findings
+ * record keyed separately, so a copied or edited file could apply permissions
+ * derived from one tool surface and another review's findings.
+ */
 export async function readStoredManifest(
   manifestId: string,
 ): Promise<StoredManifest> {
@@ -78,10 +113,29 @@ export async function readStoredManifest(
   let raw: string;
   try {
     raw = await readFile(path, 'utf8');
-  } catch {
-    throw new ManifestNotFoundError(manifestId);
+  } catch (error) {
+    if (isMissingFile(error)) throw new ManifestNotFoundError(manifestId);
+    throw new ManifestStorageError(manifestId, String(error));
   }
-  const parsed = storedManifestSchema.safeParse(JSON.parse(raw));
-  if (!parsed.success) throw new ManifestNotFoundError(manifestId);
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch {
+    // JSON.parse used to sit outside the try, so a truncated file threw a bare
+    // SyntaxError with no manifest id in it.
+    throw new ManifestStorageError(manifestId, 'the file is not valid JSON');
+  }
+
+  const parsed = storedManifestSchema.safeParse(parsedJson);
+  if (!parsed.success) {
+    throw new ManifestStorageError(manifestId, 'the file is not a manifest record');
+  }
+  if (parsed.data.manifestId !== manifestId) {
+    throw new ManifestStorageError(
+      manifestId,
+      `it records the manifest for ${parsed.data.manifestId} instead`,
+    );
+  }
   return parsed.data;
 }
