@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createDecoyApp } from './decoy-server.js';
 
 /**
@@ -41,6 +44,31 @@ function startDecoy(options: DecoyCliOptions): void {
   });
 }
 
-if (process.argv[1] !== undefined && import.meta.url.endsWith('index.js')) {
+/**
+ * Is this module the file node was actually asked to run?
+ *
+ * The previous check asked only whether the module was called `index.js`,
+ * which is true of this file however it is loaded — so importing the package
+ * through its declared `main` bound port 8931 as a side effect. Anyone
+ * importing it for `parseDecoyArguments` got a long-lived listener they never
+ * asked for, and a second import got EADDRINUSE.
+ *
+ * Comparing real paths rather than URLs matters for the installed case: `npx`
+ * puts a symlink in `node_modules/.bin`, so `process.argv[1]` and this
+ * module's own path are two different names for one file. `realpathSync`
+ * collapses both to the same answer, and throws for a path that does not
+ * exist — which is not this module being the entrypoint either.
+ */
+export function isProcessEntrypoint(moduleUrl: string): boolean {
+  const entrypoint = process.argv[1];
+  if (entrypoint === undefined) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(entrypoint));
+  } catch {
+    return false;
+  }
+}
+
+if (isProcessEntrypoint(import.meta.url)) {
   startDecoy(parseDecoyArguments(process.argv.slice(2)));
 }
