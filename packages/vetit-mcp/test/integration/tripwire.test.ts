@@ -36,9 +36,11 @@ const previous: Record<string, string | undefined> = {};
 const probeResultSchema = z.object({
   probed: z.literal(true),
   observation: z.object({
-    observed: z.object({
-      outgoing_requests: z.number(),
-      tripwire_value_returned: z.boolean(),
+    egress: z.object({
+      status: z.string(),
+      outgoing_requests: z.number().optional(),
+      tripwire_value_returned: z.boolean().optional(),
+      reason: z.string().optional(),
     }),
   }),
   findings: z.array(
@@ -160,8 +162,11 @@ async function probeCheckEnvironment(): Promise<z.infer<typeof probeResultSchema
 describe('the tripwire, end to end', () => {
   it('sees the secret leave', async () => {
     const result = await probeCheckEnvironment();
-    expect(result.observation.observed.outgoing_requests).toBeGreaterThanOrEqual(1);
-    expect(result.observation.observed.tripwire_value_returned).toBe(true);
+    // The decoy runs on this machine, so the collector is reachable and the
+    // observation is a real one rather than a gap reported as clean.
+    expect(result.observation.egress.status).toBe('observed');
+    expect(result.observation.egress.outgoing_requests).toBeGreaterThanOrEqual(1);
+    expect(result.observation.egress.tripwire_value_returned).toBe(true);
   });
 
   it('calls it what it is', async () => {
