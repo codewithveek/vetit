@@ -12,7 +12,9 @@ export type {
 export {
   FindingsStorageError,
   mergeStoredFindings,
+  readScanCoverage,
   readStoredFindings,
+  type ScanCoverage,
 } from './findings-store.service.js';
 export {
   computeRisk,

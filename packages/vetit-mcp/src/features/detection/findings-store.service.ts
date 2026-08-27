@@ -34,10 +34,27 @@ const findingSchema = z.object({
   fix: z.string(),
 });
 
+/**
+ * What is recorded for a manifest.
+ *
+ * `detectorsRun` exists because admission could not tell a clean review from
+ * no review at all. An empty findings list meant both, and the second one was
+ * being released from quarantine as though it were the first. Findings say
+ * what was found; this says what was looked for.
+ *
+ * Optional on read so records written before it existed still parse — they
+ * simply report no coverage, which is the safe reading of a file that cannot
+ * say what it checked.
+ */
 const findingsFileSchema = z.object({
   manifestId: z.string(),
   findings: z.array(findingSchema),
+  detectorsRun: z.array(z.string()).optional(),
 });
+
+export interface ScanCoverage {
+  readonly detectorsRun: readonly string[];
+}
 
 /**
  * The same guard the manifest store uses, for the same reason.
@@ -95,15 +112,18 @@ function isMissingFile(error: unknown): boolean {
  * the damaged record as though it had never held anything. A security tool
  * that turns corruption into a clean score is worse than one that crashes.
  */
-export async function readStoredFindings(
+type FindingsFile = z.infer<typeof findingsFileSchema>;
+
+/** Reads and checks the record, or reports that there is not one yet. */
+async function readFindingsFile(
   manifestId: string,
-): Promise<readonly Finding[]> {
+): Promise<FindingsFile | undefined> {
   const path = await resolveFindingsPath(manifestId);
   let raw: string;
   try {
     raw = await readFile(path, 'utf8');
   } catch (error) {
-    if (isMissingFile(error)) return [];
+    if (isMissingFile(error)) return undefined;
     throw new FindingsStorageError(manifestId, String(error));
   }
 
@@ -124,7 +144,13 @@ export async function readStoredFindings(
       `it records findings for ${parsed.data.manifestId} instead`,
     );
   }
-  return parsed.data.findings;
+  return parsed.data;
+}
+
+export async function readStoredFindings(
+  manifestId: string,
+): Promise<readonly Finding[]> {
+  return (await readFindingsFile(manifestId))?.findings ?? [];
 }
 
 /** What makes two findings the same finding. Deliberately not the F-number. */
@@ -142,6 +168,20 @@ function renumber(findings: readonly Finding[]): Finding[] {
 export interface MergeFindingsOptions {
   readonly manifestId: string;
   readonly findings: readonly Finding[];
+  /** Which detectors produced this batch, whether or not they found anything. */
+  readonly detectorsRun: readonly string[];
+}
+
+/**
+ * Which detectors have ever run for this manifest.
+ *
+ * Read separately from the findings so admission can ask "was this checked?"
+ * without inferring it from "did it find anything?" — the conflation that let
+ * an unreviewed server look clean.
+ */
+export async function readScanCoverage(manifestId: string): Promise<ScanCoverage> {
+  const file = await readFindingsFile(manifestId);
+  return { detectorsRun: file?.detectorsRun ?? [] };
 }
 
 /**
@@ -191,13 +231,18 @@ async function performMerge(
   options: MergeFindingsOptions,
 ): Promise<readonly Finding[]> {
   const path = await resolveFindingsPath(options.manifestId);
-  const merged = mergeFindings(
-    await readStoredFindings(options.manifestId),
-    options.findings,
-  );
+  const existing = await readFindingsFile(options.manifestId);
+  const merged = mergeFindings(existing?.findings ?? [], options.findings);
+  const detectorsRun = [
+    ...new Set([...(existing?.detectorsRun ?? []), ...options.detectorsRun]),
+  ].sort();
   await writeFindingsAtomically(
     path,
-    JSON.stringify({ manifestId: options.manifestId, findings: merged }, undefined, 2),
+    JSON.stringify(
+      { manifestId: options.manifestId, findings: merged, detectorsRun },
+      undefined,
+      2,
+    ),
   );
   return merged;
 }

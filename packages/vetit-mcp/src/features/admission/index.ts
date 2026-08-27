@@ -8,3 +8,7 @@ export {
   buildScopedGrant,
   type BuildGrantOptions,
 } from './build-grant.js';
+export {
+  findReasonToRefuse,
+  type RefusalCheck,
+} from './refuse-to-apply.js';

@@ -52,13 +52,13 @@ describe('path handling', () => {
 
   it('refuses a traversing id on write', async () => {
     await expect(
-      mergeStoredFindings({ manifestId: '../escape', findings: [finding('a')] }),
+      mergeStoredFindings({ manifestId: '../escape', findings: [finding('a')], detectorsRun: [] }),
     ).rejects.toBeInstanceOf(InvalidManifestIdError);
   });
 
   it('does not read a file it was pointed at from outside', async () => {
     const outside = join(workdir, 'reports', 'planted.findings.json');
-    await mergeStoredFindings({ manifestId: ulid(), findings: [] });
+    await mergeStoredFindings({ manifestId: ulid(), findings: [], detectorsRun: [] });
     await writeFile(outside, JSON.stringify({ manifestId: 'x', findings: [] }), 'utf8');
     await expect(readStoredFindings('planted')).rejects.toBeInstanceOf(
       InvalidManifestIdError,
@@ -85,7 +85,7 @@ describe('corruption is not an empty record', () => {
   // report zero and say "nothing was checked", and the next scan would
   // overwrite the damaged file as though it had never held anything.
   async function writeRaw(manifestId: string, contents: string): Promise<void> {
-    await mergeStoredFindings({ manifestId, findings: [] });
+    await mergeStoredFindings({ manifestId, findings: [], detectorsRun: [] });
     const reports = join(workdir, 'reports');
     await writeFile(join(reports, `${manifestId}.findings.json`), contents, 'utf8');
   }
@@ -138,8 +138,8 @@ describe('concurrent merges', () => {
     // discarded the first scan's findings.
     const manifestId = ulid();
     const [first, second] = await Promise.all([
-      mergeStoredFindings({ manifestId, findings: [finding('alpha')] }),
-      mergeStoredFindings({ manifestId, findings: [finding('beta')] }),
+      mergeStoredFindings({ manifestId, findings: [finding('alpha')], detectorsRun: [] }),
+      mergeStoredFindings({ manifestId, findings: [finding('beta')], detectorsRun: [] }),
     ]);
     expect(first).toBeDefined();
     expect(second).toBeDefined();
@@ -153,7 +153,7 @@ describe('concurrent merges', () => {
     const tools = Array.from({ length: 12 }, (_, index) => `tool_${String(index)}`);
     await Promise.all(
       tools.map(async (tool) =>
-        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+        mergeStoredFindings({ manifestId, findings: [finding(tool)], detectorsRun: [] }),
       ),
     );
     const stored = await readStoredFindings(manifestId);
@@ -164,7 +164,7 @@ describe('concurrent merges', () => {
     const manifestId = ulid();
     await Promise.all(
       ['a', 'b', 'c'].map(async (tool) =>
-        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+        mergeStoredFindings({ manifestId, findings: [finding(tool)], detectorsRun: [] }),
       ),
     );
     const stored = await readStoredFindings(manifestId);
@@ -175,7 +175,7 @@ describe('concurrent merges', () => {
     const manifestId = ulid();
     await Promise.all(
       ['a', 'b'].map(async (tool) =>
-        mergeStoredFindings({ manifestId, findings: [finding(tool)] }),
+        mergeStoredFindings({ manifestId, findings: [finding(tool)], detectorsRun: [] }),
       ),
     );
     const entries = await readdir(join(workdir, 'reports'));
@@ -186,18 +186,19 @@ describe('concurrent merges', () => {
 describe('merging', () => {
   it('accumulates across calls rather than replacing', async () => {
     const manifestId = ulid();
-    await mergeStoredFindings({ manifestId, findings: [finding('one')] });
+    await mergeStoredFindings({ manifestId, findings: [finding('one')], detectorsRun: [] });
     const merged = await mergeStoredFindings({
       manifestId,
       findings: [finding('two')],
-    });
+      detectorsRun: [],
+      });
     expect(merged.map((entry) => entry.tool).sort()).toEqual(['one', 'two']);
   });
 
   it('renumbers so the F-numbers stay contiguous', async () => {
     const manifestId = ulid();
-    await mergeStoredFindings({ manifestId, findings: [finding('a'), finding('b')] });
-    const merged = await mergeStoredFindings({ manifestId, findings: [finding('c')] });
+    await mergeStoredFindings({ manifestId, findings: [finding('a'), finding('b')], detectorsRun: [] });
+    const merged = await mergeStoredFindings({ manifestId, findings: [finding('c')], detectorsRun: [] });
     expect(merged.map((entry) => entry.id)).toEqual(['F-001', 'F-002', 'F-003']);
   });
 });

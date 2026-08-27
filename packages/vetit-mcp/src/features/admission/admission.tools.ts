@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { readStoredFindings } from '../detection/index.js';
+import { readScanCoverage, readStoredFindings } from '../detection/index.js';
 import { readStoredManifest } from '../manifest/index.js';
 import { buildGuardedToolResult } from '../../shared/redaction/index.js';
 import {
@@ -8,6 +9,7 @@ import {
   writeConnectorPermissions,
 } from '../../shared/trueforge-client/index.js';
 import { buildScopedGrant } from './build-grant.js';
+import { findReasonToRefuse } from './refuse-to-apply.js';
 
 /**
  * The two tools that change something, and the two that therefore pause.
@@ -86,6 +88,64 @@ const admissionInput = {
     ),
 };
 
+interface WriteAdmissionRequest {
+  readonly connectorName: string;
+  readonly notCovered: readonly string[];
+  readonly apply: boolean;
+}
+
+interface WriteAdmissionOptions {
+  readonly manifestId: string;
+  readonly request: WriteAdmissionRequest;
+}
+
+/**
+ * Propose, then apply — and the gap between the two is where the checks live.
+ *
+ * A proposal is always available and costs nothing. Applying releases a server
+ * from quarantine, so it happens only once the review is complete and the
+ * connector is the one that was actually reviewed.
+ */
+async function handleWriteAdmission(
+  options: WriteAdmissionOptions,
+): Promise<CallToolResult> {
+  const { manifestId, request } = options;
+  const manifest = await readStoredManifest(manifestId);
+  const coverage = await readScanCoverage(manifestId);
+  const grant = buildScopedGrant({
+    connectorName: request.connectorName,
+    manifest,
+    findings: await readStoredFindings(manifestId),
+    detectorsRun: coverage.detectorsRun,
+    notCovered: request.notCovered,
+  });
+
+  if (!request.apply) {
+    return buildGuardedToolResult({
+      applied: false,
+      grant,
+      note: 'Proposed only. Call again with apply true to write it.',
+    });
+  }
+
+  const refusal = await findReasonToRefuse({
+    manifest,
+    connectorName: request.connectorName,
+    detectorsRun: coverage.detectorsRun,
+  });
+  if (refusal !== undefined) {
+    return buildGuardedToolResult({ applied: false, refused: refusal, grant });
+  }
+
+  const record = await writeConnectorPermissions({
+    name: grant.name,
+    enableTools: grant.enable_tools,
+    disableTools: grant.disable_tools,
+    requireApprovalForTools: grant.require_approval_for_tools,
+  });
+  return buildGuardedToolResult({ applied: true, connector: record.name, grant });
+}
+
 function registerWriteAdmission(server: McpServer): void {
   server.registerTool(
     'write_admission',
@@ -103,34 +163,11 @@ function registerWriteAdmission(server: McpServer): void {
         openWorldHint: true,
       },
     },
-    async ({ manifest_id, connector_name, not_covered, apply }) => {
-      const manifest = await readStoredManifest(manifest_id);
-      const findings = await readStoredFindings(manifest_id);
-      const grant = buildScopedGrant({
-        connectorName: connector_name,
-        manifest,
-        findings,
-        notCovered: not_covered,
-      });
-      if (!apply) {
-        return buildGuardedToolResult({
-          applied: false,
-          grant,
-          note: 'Proposed only. Call again with apply true to write it.',
-        });
-      }
-      const record = await writeConnectorPermissions({
-        name: grant.name,
-        enableTools: grant.enable_tools,
-        disableTools: grant.disable_tools,
-        requireApprovalForTools: grant.require_approval_for_tools,
-      });
-      return buildGuardedToolResult({
-        applied: true,
-        connector: record.name,
-        grant,
-      });
-    },
+    async ({ manifest_id, connector_name, not_covered, apply }) =>
+      await handleWriteAdmission({
+        manifestId: manifest_id,
+        request: { connectorName: connector_name, notCovered: not_covered, apply },
+      }),
   );
 }
 
