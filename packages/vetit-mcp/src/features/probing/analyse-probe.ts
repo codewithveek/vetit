@@ -9,21 +9,31 @@ import type { ProbeObservation } from './probing.types.js';
  * anywhere, and a reader who disagrees with a conclusion can still trust the
  * record it was drawn from.
  *
- * There are three things worth concluding, and only one of them is the famous
- * one:
+ * Four things worth concluding, and only one of them is the famous one:
  *
- *  P-01  the tool claimed to be read-only and was observed to write. This is
+ *  P-01  the tool claimed to be read-only and was *proven* to write. This is
  *        the finding no description scanner can produce, because nothing in
  *        the name, the description or the schema says it.
  *  P-02  the tool sent traffic to the tripwire collector, or sent the planted
  *        secret back. Nothing arriving proves nothing; something arriving
  *        proves theft.
- *  P-03  the tool declared nothing and was observed to write. Less damning
- *        than P-01 — it did not lie, it simply said nothing — but it settles
- *        the question §7 leaves open about how to treat silence.
+ *  P-03  the tool declared nothing and was proven to write. Less damning than
+ *        P-01 — it did not lie, it simply said nothing — but it settles the
+ *        question §7 leaves open about how to treat silence.
+ *  P-05  the response *talks* as though it wrote, and nothing confirmed it.
+ *        Worth a look, not worth a rejection.
  */
 
-/** Language a response uses when something changed on the other side. */
+/**
+ * Language a response uses when something changed on the other side.
+ *
+ * These are the target's own words about itself, which makes them the weakest
+ * evidence in the building. They used to set `observedWrite` directly, so
+ * "nothing was written" and an error reading "export not completed" both
+ * produced a critical P-01 against a tool that had changed nothing — while
+ * the comment two lines above claimed language was never promoted to proof.
+ * It is an indication now, and P-05 is where indications go.
+ */
 const MUTATION_PHRASES: readonly RegExp[] = [
   /\bcreated\b/i,
   /\bupdated\b/i,
@@ -38,35 +48,40 @@ const MUTATION_PHRASES: readonly RegExp[] = [
 ];
 
 export interface WriteEvidence {
+  /** True only when state observably changed. Never set by wording alone. */
   readonly observedWrite: boolean;
+  /** How it was proven. Empty when it was not. */
   readonly how: readonly string[];
+  /** Things worth a look that prove nothing. */
+  readonly indications: readonly string[];
 }
 
 /**
- * Two independent signals, and the difference between them matters.
+ * The only proof available from outside a server you cannot instrument: state
+ * read through a tool the operator nominated, before and after, differing.
  *
- * A read-back that changed is proof: state that was not there before is there
- * now. Mutation language in a response is only an indication — a tool can say
- * "created" about something it did not create — so it is reported as what it
- * is, and never on its own upgraded into proof.
+ * Both reads must have succeeded. A pre-read that worked and a post-read that
+ * timed out is not a comparison, and used to be reported as one.
  */
 export function assessWriteEvidence(observation: ProbeObservation): WriteEvidence {
-  const how: string[] = [];
   const { readBackBefore, readBackAfter } = observation;
-  const readBackChanged =
-    readBackBefore !== undefined &&
-    readBackAfter !== undefined &&
-    readBackBefore !== readBackAfter;
-  if (readBackChanged) {
-    how.push('state visible through a read-only tool changed across the call');
+  const how: string[] = [];
+  if (
+    readBackBefore.status === 'read' &&
+    readBackAfter.status === 'read' &&
+    readBackBefore.value !== readBackAfter.value
+  ) {
+    how.push(
+      `state read through ${observation.readBackTool ?? 'the nominated reader'} ` +
+        'changed across the call',
+    );
   }
-  const phrase = MUTATION_PHRASES.find((pattern) =>
-    pattern.test(observation.responseSnippet),
-  );
-  if (phrase !== undefined) {
-    how.push('the response reports having changed something');
+
+  const indications: string[] = [];
+  if (MUTATION_PHRASES.some((pattern) => pattern.test(observation.responseSnippet))) {
+    indications.push('the response uses the language of having changed something');
   }
-  return { observedWrite: readBackChanged || phrase !== undefined, how };
+  return { observedWrite: how.length > 0, how, indications };
 }
 
 function evidenceFor(observation: ProbeObservation): DraftFinding['evidence'] {
@@ -103,21 +118,54 @@ function buildLabelFinding(
   };
 }
 
+/**
+ * An indication with nothing behind it.
+ *
+ * Medium, not critical: the tool said it changed something and no state
+ * comparison was available to check. That is worth a human's attention and is
+ * not worth rejecting a server over, which is exactly the distinction the old
+ * code collapsed.
+ */
+function buildUnverifiedWriteFinding(
+  observation: ProbeObservation,
+  evidence: WriteEvidence,
+): DraftFinding | undefined {
+  if (evidence.observedWrite || evidence.indications.length === 0) return undefined;
+  if (observation.claimedReadOnly !== true && observation.claimedReadOnly !== undefined) {
+    return undefined;
+  }
+  return {
+    detector: 'P-05',
+    severity: 'medium',
+    tool: observation.toolName,
+    message:
+      'Tool claims to be read-only, and its response uses the language of ' +
+      'having changed something. Nothing confirmed it either way: this is a ' +
+      'reason to look, not a proven write.',
+    evidence: evidenceFor(observation),
+    fix:
+      'Nominate a read-only tool that observes this one’s state and probe ' +
+      'again with read_back_tool set. Until then the label is unverified ' +
+      'rather than disproven.',
+  };
+}
+
 function buildEgressFinding(observation: ProbeObservation): DraftFinding | undefined {
-  if (observation.egressHits.length === 0) return undefined;
+  const { egress } = observation;
+  if (egress.status !== 'observed' || egress.hits.length === 0) return undefined;
   return {
     detector: 'P-02',
     severity: 'critical',
     tool: observation.toolName,
-    message: observation.canaryReturned
+    message: egress.canaryReturned
       ? 'Tool sent the planted tripwire value to an outside address. This is ' +
         'credential theft, observed directly.'
-      : `Tool made ${String(observation.egressHits.length)} outgoing request(s) ` +
+      : `Tool made ${String(egress.hits.length)} outgoing request(s) ` +
         'to the tripwire collector during a single call.',
     evidence: {
       path: `probe:${observation.toolName}`,
       jsonPointer: '/probe/egress',
-      snippet: observation.egressHits[0]?.bodySnippet ?? '',
+      snippet: egress.hits[0]?.bodySnippet ?? '',
     },
     fix:
       'Reject the server. A tool that moves data off the machine during a ' +
@@ -128,10 +176,9 @@ function buildEgressFinding(observation: ProbeObservation): DraftFinding | undef
 
 export function analyseProbe(observation: ProbeObservation): readonly DraftFinding[] {
   const evidence = assessWriteEvidence(observation);
-  const findings: DraftFinding[] = [];
-  const label = buildLabelFinding(observation, evidence);
-  if (label !== undefined) findings.push(label);
-  const egress = buildEgressFinding(observation);
-  if (egress !== undefined) findings.push(egress);
-  return findings;
+  return [
+    buildLabelFinding(observation, evidence),
+    buildUnverifiedWriteFinding(observation, evidence),
+    buildEgressFinding(observation),
+  ].filter((finding): finding is DraftFinding => finding !== undefined);
 }

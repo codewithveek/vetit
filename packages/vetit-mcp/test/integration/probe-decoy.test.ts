@@ -36,12 +36,24 @@ const probeResultSchema = z.object({
   observation: z
     .object({
       tool: z.string(),
+      url: z.string(),
       claimed: z.object({ read_only: z.boolean().nullable() }),
       observed: z.object({
         wrote: z.boolean(),
         how: z.array(z.string()),
-        read_back_available: z.boolean(),
-        outgoing_requests: z.number(),
+        indications: z.array(z.string()),
+      }),
+      read_back: z.object({
+        tool: z.string().nullable(),
+        before: z.string(),
+        after: z.string(),
+        comparable: z.boolean(),
+      }),
+      egress: z.object({
+        status: z.string(),
+        outgoing_requests: z.number().optional(),
+        tripwire_value_returned: z.boolean().optional(),
+        reason: z.string().optional(),
       }),
       arguments_sent: z.record(z.unknown()),
       caveat: z.string(),
@@ -112,28 +124,34 @@ afterAll(async () => {
 
 describe('probing export_all', () => {
   it('catches the lie that every static check missed', async () => {
+    // list_spaces is nominated as the reader: it is read-only, takes no
+    // arguments, and reports the spaces export_all adds to. Vetit will not
+    // guess that relationship — an operator asserts it.
     const manifestId = await fetchDecoyManifest();
     const result = probeResultSchema.parse(
       await callVetit('probe_tool', {
         manifest_id: manifestId,
         url: decoyUrl,
         tool_name: 'export_all',
+        read_back_tool: 'list_spaces',
       }),
     );
 
     expect(result.probed).toBe(true);
     expect(result.observation?.claimed.read_only).toBe(true);
     expect(result.observation?.observed.wrote).toBe(true);
-    expect(result.observation?.observed.how).toContain(
-      'state visible through a read-only tool changed across the call',
-    );
+    expect(result.observation?.read_back.comparable).toBe(true);
+    expect(result.observation?.observed.how[0]).toContain('changed across the call');
 
     const lie = result.findings?.find((finding) => finding.detector === 'P-01');
     expect(lie?.severity).toBe('critical');
     expect(lie?.message).toContain('The label is false');
   });
 
-  it('records the read-back it used, rather than claiming certainty it lacks', async () => {
+  it('proves nothing without a nominated reader, and says so', async () => {
+    // The old behaviour picked a reader automatically and called the result
+    // proof. Nothing established that the reader observed this tool's state,
+    // so the finding is now an indication at medium rather than a critical.
     const manifestId = await fetchDecoyManifest();
     const result = probeResultSchema.parse(
       await callVetit('probe_tool', {
@@ -142,18 +160,40 @@ describe('probing export_all', () => {
         tool_name: 'export_all',
       }),
     );
-    expect(result.observation?.observed.read_back_available).toBe(true);
-    expect(result.observation?.caveat).toContain('immediately before and');
+
+    expect(result.observation?.observed.wrote).toBe(false);
+    expect(result.observation?.read_back.comparable).toBe(false);
+    expect(result.observation?.caveat).toContain('read_back_tool');
+    expect(result.findings?.map((finding) => finding.detector)).toEqual(['P-05']);
+    expect(result.findings?.[0]?.severity).toBe('medium');
   });
 
-  it('feeds the finding into the score, which now rejects on behaviour too', async () => {
+  it('names the reader it used, rather than claiming certainty it lacks', async () => {
+    const manifestId = await fetchDecoyManifest();
+    const result = probeResultSchema.parse(
+      await callVetit('probe_tool', {
+        manifest_id: manifestId,
+        url: decoyUrl,
+        tool_name: 'export_all',
+        read_back_tool: 'list_spaces',
+      }),
+    );
+    expect(result.observation?.read_back.tool).toBe('list_spaces');
+    expect(result.observation?.caveat).toContain('list_spaces');
+  });
+
+  it('feeds the proven finding into the score, which rejects on behaviour too', async () => {
     const manifestId = await fetchDecoyManifest();
     await callVetit('probe_tool', {
       manifest_id: manifestId,
       url: decoyUrl,
       tool_name: 'export_all',
+      read_back_tool: 'list_spaces',
     });
-    const riskSchema = z.object({ band: z.string(), counts: z.object({ critical: z.number() }) });
+    const riskSchema = z.object({
+      band: z.string(),
+      counts: z.object({ critical: z.number() }),
+    });
     const risk = riskSchema.parse(await callVetit('compute_risk', { manifest_id: manifestId }));
     expect(risk.counts.critical).toBeGreaterThanOrEqual(1);
     expect(risk.band).toBe('reject_recommended');
@@ -168,10 +208,41 @@ describe('probing an honest tool', () => {
         manifest_id: manifestId,
         url: decoyUrl,
         tool_name: 'search_docs',
+        read_back_tool: 'list_spaces',
       }),
     );
     expect(result.observation?.observed.wrote).toBe(false);
     expect(result.findings).toEqual([]);
+  });
+});
+
+describe('the manifest decides which server is called', () => {
+  it('refuses a url that is not the one the manifest came from', async () => {
+    // A benign manifest could otherwise authorise calling a same-named
+    // destructive tool on a different server, with arguments built from the
+    // wrong schema.
+    const manifestId = await fetchDecoyManifest();
+    const result = probeResultSchema.parse(
+      await callVetit('probe_tool', {
+        manifest_id: manifestId,
+        url: 'http://127.0.0.1:9/mcp',
+        tool_name: 'search_docs',
+      }),
+    );
+    expect(result.probed).toBe(false);
+    expect(result.refused).toContain('Refusing to call');
+  });
+
+  it('needs no url at all, because the manifest carries one', async () => {
+    const manifestId = await fetchDecoyManifest();
+    const result = probeResultSchema.parse(
+      await callVetit('probe_tool', {
+        manifest_id: manifestId,
+        tool_name: 'search_docs',
+      }),
+    );
+    expect(result.probed).toBe(true);
+    expect(result.observation?.url).toBe(decoyUrl);
   });
 });
 
@@ -201,6 +272,20 @@ describe('the rules a probe has to follow', () => {
     );
     expect(result.probed).toBe(true);
     expect(result.findings).toEqual([]);
+  });
+
+  it('refuses a reader that is not read-only', async () => {
+    const manifestId = await fetchDecoyManifest();
+    const result = probeResultSchema.parse(
+      await callVetit('probe_tool', {
+        manifest_id: manifestId,
+        url: decoyUrl,
+        tool_name: 'search_docs',
+        read_back_tool: 'create_page',
+      }),
+    );
+    expect(result.probed).toBe(false);
+    expect(result.refused).toContain('does not claim to be read-only');
   });
 
   it('refuses to call the same tool twice in one run', async () => {
@@ -273,10 +358,21 @@ describe('the tripwire', () => {
         manifest_id: manifestId,
         url: decoyUrl,
         tool_name: 'report_status',
-        allow_non_read_only: false,
       }),
     );
     const notes = result.observation?.arguments_sent['notes'];
     expect(typeof notes === 'string' ? notes : '').toContain('canary');
+  });
+
+  it('observes egress for a target on this machine', async () => {
+    const manifestId = await fetchDecoyManifest();
+    const result = probeResultSchema.parse(
+      await callVetit('probe_tool', {
+        manifest_id: manifestId,
+        url: decoyUrl,
+        tool_name: 'get_page',
+      }),
+    );
+    expect(result.observation?.egress.status).toBe('observed');
   });
 });

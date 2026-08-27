@@ -3,7 +3,10 @@ import {
   analyseProbe,
   assessWriteEvidence,
 } from '../../../src/features/probing/index.js';
-import type { ProbeObservation } from '../../../src/features/probing/index.js';
+import type {
+  EgressHit,
+  ProbeObservation,
+} from '../../../src/features/probing/index.js';
 
 /**
  * The reasoning, tested without a server anywhere. That separation is the
@@ -14,63 +17,103 @@ import type { ProbeObservation } from '../../../src/features/probing/index.js';
 function observation(overrides: Partial<ProbeObservation> = {}): ProbeObservation {
   return {
     toolName: 'export_all',
+    url: 'http://127.0.0.1:1/mcp',
     claimedReadOnly: true,
     claimedDestructive: false,
     argumentsSent: {},
     responseSnippet: '⟦UNTRUSTED_TEXT: Nothing happened. ⟧',
     responseWasError: false,
-    readBackBefore: 'handbook\nrunbooks',
-    readBackAfter: 'handbook\nrunbooks',
-    egressHits: [],
-    canaryReturned: false,
+    readBackTool: 'list_spaces',
+    readBackBefore: { status: 'read', value: 'handbook\nrunbooks' },
+    readBackAfter: { status: 'read', value: 'handbook\nrunbooks' },
+    egress: { status: 'not_performed', reason: 'no reachable collector' },
     durationMs: 12,
     ...overrides,
   };
 }
 
-describe('assessWriteEvidence', () => {
+function hit(containedCanary: boolean): EgressHit {
+  return {
+    method: 'POST',
+    path: '/collect',
+    bodySnippet: '⟦UNTRUSTED_TEXT: x ⟧',
+    containedCanary,
+  };
+}
+
+describe('assessWriteEvidence — what counts as proof', () => {
   it('treats a changed read-back as proof', () => {
     const evidence = assessWriteEvidence(
-      observation({ readBackAfter: 'handbook\nrunbooks\narchive-1' }),
+      observation({ readBackAfter: { status: 'read', value: 'handbook\narchive-1' } }),
     );
     expect(evidence.observedWrite).toBe(true);
     expect(evidence.how[0]).toContain('changed across the call');
   });
 
-  it('treats mutation language as an indication, and says which it is', () => {
-    const evidence = assessWriteEvidence(
-      observation({ responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧' }),
-    );
-    expect(evidence.observedWrite).toBe(true);
-    expect(evidence.how).toEqual(['the response reports having changed something']);
-  });
-
-  it('reports both signals when both fired', () => {
-    const evidence = assessWriteEvidence(
-      observation({
-        readBackAfter: 'handbook\nrunbooks\narchive-1',
-        responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧',
-      }),
-    );
-    expect(evidence.how).toHaveLength(2);
-  });
-
-  it('finds nothing when nothing changed and nothing was claimed', () => {
+  it('finds nothing when the state did not change', () => {
     expect(assessWriteEvidence(observation()).observedWrite).toBe(false);
   });
 
   it('does not treat a missing read-back as a changed one', () => {
     const evidence = assessWriteEvidence(
-      observation({ readBackBefore: undefined, readBackAfter: undefined }),
+      observation({
+        readBackBefore: { status: 'not_requested' },
+        readBackAfter: { status: 'not_requested' },
+      }),
     );
     expect(evidence.observedWrite).toBe(false);
+  });
+
+  it('refuses to compare when only one of the two reads succeeded', () => {
+    // A pre-read that worked and a post-read that timed out is not a
+    // comparison, and used to be reported as one.
+    const evidence = assessWriteEvidence(
+      observation({ readBackAfter: { status: 'failed', reason: 'timeout' } }),
+    );
+    expect(evidence.observedWrite).toBe(false);
+    expect(evidence.how).toEqual([]);
+  });
+});
+
+describe('assessWriteEvidence — what is only an indication', () => {
+  it('records mutation language without calling it proof', () => {
+    const evidence = assessWriteEvidence(
+      observation({ responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧' }),
+    );
+    expect(evidence.observedWrite).toBe(false);
+    expect(evidence.indications).toHaveLength(1);
+  });
+
+  it.each([
+    'Nothing was written.',
+    'Export not completed.',
+    'No pages were created.',
+    'Error: could not save.',
+  ])('does not turn %j into a proven write', (text) => {
+    // These all match a mutation keyword and all describe a tool that changed
+    // nothing. They used to produce a critical P-01.
+    const evidence = assessWriteEvidence(
+      observation({ responseSnippet: `⟦UNTRUSTED_TEXT: ${text} ⟧` }),
+    );
+    expect(evidence.observedWrite).toBe(false);
+  });
+
+  it('reports both when state changed and the wording agrees', () => {
+    const evidence = assessWriteEvidence(
+      observation({
+        readBackAfter: { status: 'read', value: 'handbook\narchive-1' },
+        responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧',
+      }),
+    );
+    expect(evidence.observedWrite).toBe(true);
+    expect(evidence.indications).toHaveLength(1);
   });
 });
 
 describe('the lying label', () => {
-  it('is critical when a tool claims read-only and was seen to write', () => {
+  it('is critical when a tool claims read-only and was proven to write', () => {
     const findings = analyseProbe(
-      observation({ readBackAfter: 'handbook\nrunbooks\narchive-1' }),
+      observation({ readBackAfter: { status: 'read', value: 'handbook\narchive-1' } }),
     );
     expect(findings).toHaveLength(1);
     expect(findings[0]?.detector).toBe('P-01');
@@ -83,7 +126,7 @@ describe('the lying label', () => {
       observation({
         claimedReadOnly: undefined,
         claimedDestructive: undefined,
-        readBackAfter: 'changed',
+        readBackAfter: { status: 'read', value: 'changed' },
       }),
     );
     expect(findings[0]?.detector).toBe('P-03');
@@ -95,7 +138,7 @@ describe('the lying label', () => {
       observation({
         claimedReadOnly: false,
         claimedDestructive: true,
-        readBackAfter: 'changed',
+        readBackAfter: { status: 'read', value: 'changed' },
       }),
     );
     expect(findings).toEqual([]);
@@ -106,14 +149,64 @@ describe('the lying label', () => {
   });
 });
 
+describe('an unverified write', () => {
+  it('is medium, not critical, when only the wording suggests it', () => {
+    const findings = analyseProbe(
+      observation({
+        responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧',
+        readBackBefore: { status: 'not_requested' },
+        readBackAfter: { status: 'not_requested' },
+      }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.detector).toBe('P-05');
+    expect(findings[0]?.severity).toBe('medium');
+    expect(findings[0]?.message).toContain('not a proven write');
+  });
+
+  it('tells the reader how to turn it into proof', () => {
+    const findings = analyseProbe(
+      observation({
+        responseSnippet: '⟦UNTRUSTED_TEXT: Created page-4. ⟧',
+        readBackBefore: { status: 'not_requested' },
+        readBackAfter: { status: 'not_requested' },
+      }),
+    );
+    expect(findings[0]?.fix).toContain('read_back_tool');
+  });
+
+  it('gives way to P-01 once the write is proven', () => {
+    const findings = analyseProbe(
+      observation({
+        responseSnippet: '⟦UNTRUSTED_TEXT: Export complete. ⟧',
+        readBackAfter: { status: 'read', value: 'changed' },
+      }),
+    );
+    expect(findings.map((finding) => finding.detector)).toEqual(['P-01']);
+  });
+
+  it('says nothing about a tool that admits it writes', () => {
+    const findings = analyseProbe(
+      observation({
+        claimedReadOnly: false,
+        claimedDestructive: true,
+        responseSnippet: '⟦UNTRUSTED_TEXT: Created page-4. ⟧',
+      }),
+    );
+    expect(findings).toEqual([]);
+  });
+});
+
 describe('the tripwire', () => {
   it('is critical when the planted value comes back', () => {
     const findings = analyseProbe(
       observation({
-        egressHits: [
-          { method: 'POST', path: '/collect', bodySnippet: '⟦UNTRUSTED_TEXT: x ⟧', containedCanary: true },
-        ],
-        canaryReturned: true,
+        egress: {
+          status: 'observed',
+          collectorUrl: 'http://127.0.0.1:9/collect',
+          hits: [hit(true)],
+          canaryReturned: true,
+        },
       }),
     );
     expect(findings[0]?.detector).toBe('P-02');
@@ -123,23 +216,39 @@ describe('the tripwire', () => {
   it('is still critical when traffic arrived without the planted value', () => {
     const findings = analyseProbe(
       observation({
-        egressHits: [
-          { method: 'POST', path: '/collect', bodySnippet: '⟦UNTRUSTED_TEXT: x ⟧', containedCanary: false },
-        ],
+        egress: {
+          status: 'observed',
+          collectorUrl: 'http://127.0.0.1:9/collect',
+          hits: [hit(false)],
+          canaryReturned: false,
+        },
       }),
     );
     expect(findings[0]?.detector).toBe('P-02');
     expect(findings[0]?.message).toContain('outgoing request');
   });
 
+  it('says nothing when the collector could not have been reached', () => {
+    // Silence from a collector the target cannot see is not evidence of
+    // anything, and must not read as a clean result.
+    const findings = analyseProbe(
+      observation({
+        egress: { status: 'not_performed', reason: 'target is not on this host' },
+      }),
+    );
+    expect(findings).toEqual([]);
+  });
+
   it('reports the label lie and the theft separately', () => {
     const findings = analyseProbe(
       observation({
-        readBackAfter: 'changed',
-        egressHits: [
-          { method: 'POST', path: '/c', bodySnippet: '⟦UNTRUSTED_TEXT: x ⟧', containedCanary: true },
-        ],
-        canaryReturned: true,
+        readBackAfter: { status: 'read', value: 'changed' },
+        egress: {
+          status: 'observed',
+          collectorUrl: 'http://127.0.0.1:9/collect',
+          hits: [hit(true)],
+          canaryReturned: true,
+        },
       }),
     );
     expect(findings.map((finding) => finding.detector)).toEqual(['P-01', 'P-02']);

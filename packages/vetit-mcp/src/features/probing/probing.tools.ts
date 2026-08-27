@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { mergeStoredFindings, type Finding } from '../detection/index.js';
 import { readStoredManifest } from '../manifest/index.js';
@@ -19,7 +20,23 @@ import type { ProbeObservation } from './probing.types.js';
 
 const probeInput = {
   manifest_id: z.string().describe('Manifest identifying the tool to probe.'),
-  url: z.string().url().describe('Endpoint of the target. Must be a server you own.'),
+  url: z
+    .string()
+    .url()
+    .optional()
+    .describe(
+      'Optional. The endpoint comes from the manifest; supplying one here ' +
+        'only asserts which server you believe it is, and a mismatch is ' +
+        'refused rather than followed.',
+    ),
+  read_back_tool: z
+    .string()
+    .optional()
+    .describe(
+      'A read-only tool on this server that you know reports state this tool ' +
+        'would change. Without one, no before/after comparison is made and ' +
+        'nothing can be proven about whether the tool writes.',
+    ),
   tool_name: z.string().describe('The single tool to call.'),
   connector_name: z
     .string()
@@ -72,10 +89,64 @@ function numberFindings(drafts: readonly Omit<Finding, 'id'>[]): Finding[] {
   }));
 }
 
+/** Each phase reported on its own, because they can fail independently. */
+function describeReadBack(observation: ProbeObservation): Record<string, unknown> {
+  return {
+    tool: observation.readBackTool ?? null,
+    before: observation.readBackBefore.status,
+    after: observation.readBackAfter.status,
+    comparable:
+      observation.readBackBefore.status === 'read' &&
+      observation.readBackAfter.status === 'read',
+  };
+}
+
+/**
+ * The caveat is the most important line in the whole result.
+ *
+ * A probe that could not compare state has not shown the tool is honest — it
+ * has shown nothing — and the earlier version reported a successful pre-read
+ * with a failed post-read as "state was read before and after".
+ */
+function describeCaveat(observation: ProbeObservation): string {
+  const { readBackBefore: before, readBackAfter: after } = observation;
+  if (before.status === 'read' && after.status === 'read') {
+    return `State was read through ${observation.readBackTool ?? 'the nominated reader'} immediately before and after the call.`;
+  }
+  if (before.status === 'not_requested') {
+    return (
+      'No read-back tool was nominated, so no state was compared and nothing ' +
+      'has been established about whether this tool writes. Pass ' +
+      'read_back_tool naming a read-only tool that reports state this one ' +
+      'would change.'
+    );
+  }
+  return (
+    'The state comparison did not complete — ' +
+    `before: ${before.status}, after: ${after.status}. ` +
+    'A write could have happened without being seen. This is a gap in the ' +
+    'evidence, not a clean result.'
+  );
+}
+
+function describeEgressResult(observation: ProbeObservation): Record<string, unknown> {
+  const { egress } = observation;
+  if (egress.status === 'not_performed') {
+    return { status: 'not_performed', reason: egress.reason };
+  }
+  return {
+    status: 'observed',
+    collector_url: egress.collectorUrl,
+    outgoing_requests: egress.hits.length,
+    tripwire_value_returned: egress.canaryReturned,
+  };
+}
+
 function describeObservation(observation: ProbeObservation): Record<string, unknown> {
   const evidence = assessWriteEvidence(observation);
   return {
     tool: observation.toolName,
+    url: observation.url,
     claimed: {
       read_only: observation.claimedReadOnly ?? null,
       destructive: observation.claimedDestructive ?? null,
@@ -83,21 +154,15 @@ function describeObservation(observation: ProbeObservation): Record<string, unkn
     observed: {
       wrote: evidence.observedWrite,
       how: evidence.how,
-      read_back_available: observation.readBackBefore !== undefined,
-      outgoing_requests: observation.egressHits.length,
-      tripwire_value_returned: observation.canaryReturned,
+      indications: evidence.indications,
       response_was_error: observation.responseWasError,
       duration_ms: observation.durationMs,
     },
+    read_back: describeReadBack(observation),
+    egress: describeEgressResult(observation),
     arguments_sent: observation.argumentsSent,
     response: observation.responseSnippet,
-    caveat:
-      observation.readBackBefore === undefined
-        ? 'No read-only, no-argument tool was available for a read-back, so a ' +
-          'write could have happened without being seen. This is a gap in the ' +
-          'evidence, not a clean result.'
-        : 'State was read through a read-only tool immediately before and ' +
-          'after the call.',
+    caveat: describeCaveat(observation),
   };
 }
 
@@ -131,6 +196,47 @@ async function recordProbeFindings(
   return findings;
 }
 
+interface ProbeInput {
+  readonly manifest_id: string;
+  readonly tool_name: string;
+  readonly url?: string | undefined;
+  readonly read_back_tool?: string | undefined;
+  readonly connector_name?: string | undefined;
+  readonly allow_non_read_only: boolean;
+  readonly credential_supplied: boolean;
+}
+
+async function handleProbe(input: ProbeInput): Promise<CallToolResult> {
+  const manifest = await readStoredManifest(input.manifest_id);
+  try {
+    const observation = await probeTool({
+      manifest,
+      toolName: input.tool_name,
+      allowNonReadOnly: input.allow_non_read_only,
+      ledgerKey: input.connector_name ?? input.manifest_id,
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.read_back_tool === undefined
+        ? {}
+        : { readBackToolName: input.read_back_tool }),
+    });
+    const findings = await recordProbeFindings({
+      manifestId: input.manifest_id,
+      observation,
+      credentialSupplied: input.credential_supplied,
+    });
+    return buildGuardedToolResult({
+      probed: true,
+      observation: describeObservation(observation),
+      findings,
+    });
+  } catch (error) {
+    if (error instanceof ProbeRefusedError) {
+      return buildGuardedToolResult({ probed: false, refused: error.message });
+    }
+    throw error;
+  }
+}
+
 export function registerProbingTools(server: McpServer): void {
   server.registerTool(
     'probe_tool',
@@ -150,32 +256,6 @@ export function registerProbingTools(server: McpServer): void {
         openWorldHint: true,
       },
     },
-    async (input) => {
-      const manifest = await readStoredManifest(input.manifest_id);
-      try {
-        const observation = await probeTool({
-          url: input.url,
-          manifest,
-          toolName: input.tool_name,
-          allowNonReadOnly: input.allow_non_read_only,
-          ledgerKey: input.connector_name ?? input.manifest_id,
-        });
-        const findings = await recordProbeFindings({
-          manifestId: input.manifest_id,
-          observation,
-          credentialSupplied: input.credential_supplied,
-        });
-        return buildGuardedToolResult({
-          probed: true,
-          observation: describeObservation(observation),
-          findings,
-        });
-      } catch (error) {
-        if (error instanceof ProbeRefusedError) {
-          return buildGuardedToolResult({ probed: false, refused: error.message });
-        }
-        throw error;
-      }
-    },
+    async (input) => await handleProbe(input),
   );
 }
