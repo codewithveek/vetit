@@ -20,6 +20,12 @@ import type {
 export interface RunDetectorsOptions {
   readonly manifest: StoredManifest;
   readonly manifestPath: string;
+  /**
+   * Tool names already trusted in this workspace, for D-09's shadowing check.
+   *
+   * Required, with no default, on purpose — see `runDetectors`.
+   */
+  readonly installedToolNames: readonly string[];
 }
 
 /** Which field of the tool each detector is handed. */
@@ -67,32 +73,26 @@ export interface DetectionRun {
 /**
  * Every tool, every detector, in a fixed order.
  *
- * `installedToolNames` defaults to empty, and the comment here used to claim
- * it defaulted to the manifest's own tools. The comment was wrong, not the
- * code, and it is the comment that has been fixed.
+ * `installedToolNames` has no default. There were two functions here — one
+ * that took a workspace list and one that quietly supplied an empty one — and
+ * the second carried a comment claiming it defaulted to the manifest's own
+ * tools. Code and comment disagreed, and review found it twice.
  *
- * Defaulting to the manifest's own tools would mean a tool that mentions a
- * sibling — "call `list_spaces` first", which honest servers write all the
- * time — is reported as cross-server shadowing at critical severity. D-09 is
- * about a server naming tools belonging to *other* servers; a server
- * describing itself is not that, and forty points of risk for it would be a
- * false alarm on exactly the servers worth admitting.
+ * Both candidate defaults are wrong, which is why there is none:
  *
- * With no workspace list there is genuinely nothing to compare against, so the
- * installed-name signal does not run. `check_shadowing` takes the list as an
- * argument for that reason, and reports it as one of the detectors it ran.
+ *  - an empty list silently switches off D-09's installed-name signal, and a
+ *    security check that turns itself off without saying so is the worst kind
+ *  - the manifest's own tools makes a tool that mentions a sibling — "call
+ *    `list_spaces` first", which honest servers write constantly — a critical
+ *    cross-server-shadowing finding worth forty points of risk. D-09 is about
+ *    a server naming tools belonging to *other* servers; a server describing
+ *    itself is not that
+ *
+ * So every caller states what it means. Passing `[]` is still allowed and
+ * still switches the signal off, but it is now a decision somebody wrote down
+ * rather than one the runner made on their behalf.
  */
 export function runDetectors(options: RunDetectorsOptions): DetectionRun {
-  return runDetectorsWithInstalled({ ...options, installedToolNames: [] });
-}
-
-export interface RunDetectorsWithInstalledOptions extends RunDetectorsOptions {
-  readonly installedToolNames: readonly string[];
-}
-
-export function runDetectorsWithInstalled(
-  options: RunDetectorsWithInstalledOptions,
-): DetectionRun {
   const drafts: DraftFinding[] = [];
   options.manifest.tools.forEach((tool, toolIndex) => {
     drafts.push(

@@ -17,8 +17,6 @@ export {
 } from './risk-score.js';
 export {
   runDetectors,
-  runDetectorsWithInstalled,
   type DetectionRun,
   type RunDetectorsOptions,
-  type RunDetectorsWithInstalledOptions,
 } from './run-detectors.js';
