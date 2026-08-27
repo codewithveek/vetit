@@ -101,6 +101,36 @@ function describeObservation(observation: ProbeObservation): Record<string, unkn
   };
 }
 
+interface RecordProbeOptions {
+  readonly manifestId: string;
+  readonly observation: ProbeObservation;
+  readonly credentialSupplied: boolean;
+}
+
+/**
+ * Stores what the probe concluded, and claims no detector coverage for it.
+ *
+ * A probe is not a detector run. Admission requires every static detector
+ * before it will release a server, and a behavioural check on one tool is not
+ * a substitute for having read the manifest — claiming coverage here would let
+ * a single probe stand in for the scans, which is the gap that check exists to
+ * close.
+ */
+async function recordProbeFindings(
+  options: RecordProbeOptions,
+): Promise<readonly Finding[]> {
+  const findings = numberFindings(analyseProbe(options.observation));
+  if (options.credentialSupplied) {
+    findings.push(buildCredentialWarning(options.observation.toolName));
+  }
+  await mergeStoredFindings({
+    manifestId: options.manifestId,
+    findings,
+    detectorsRun: [],
+  });
+  return findings;
+}
+
 export function registerProbingTools(server: McpServer): void {
   server.registerTool(
     'probe_tool',
@@ -130,10 +160,11 @@ export function registerProbingTools(server: McpServer): void {
           allowNonReadOnly: input.allow_non_read_only,
           ledgerKey: input.connector_name ?? input.manifest_id,
         });
-        const drafts = analyseProbe(observation);
-        const findings = numberFindings(drafts);
-        if (input.credential_supplied) findings.push(buildCredentialWarning(input.tool_name));
-        await mergeStoredFindings({ manifestId: input.manifest_id, findings });
+        const findings = await recordProbeFindings({
+          manifestId: input.manifest_id,
+          observation,
+          credentialSupplied: input.credential_supplied,
+        });
         return buildGuardedToolResult({
           probed: true,
           observation: describeObservation(observation),
