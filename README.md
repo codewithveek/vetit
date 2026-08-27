@@ -80,11 +80,13 @@ it('says nothing at all about export_all', () => {
 });
 ```
 
-Then you call it:
+Then you call it, nominating a reader that reports state it would change:
 
 ```
+probe_tool tool_name=export_all read_back_tool=list_spaces
+
 observed.wrote:  true
-observed.how:    state visible through a read-only tool changed across the call
+observed.how:    state read through list_spaces changed across the call
 finding P-01:    critical — annotated readOnlyHint: true and observed to write.
                  The label is false, and no amount of reading the manifest
                  would have shown it.
@@ -92,6 +94,16 @@ finding P-01:    critical — annotated readOnlyHint: true and observed to write
 
 That gap between the two tests is the argument for behaviour testing, written
 as something that runs rather than something claimed.
+
+**Why you name the reader.** Nothing in MCP records which read-only tool
+observes which writer's state. Vetit used to pick one automatically, which
+meant a reader whose output naturally varies could invent a change, and an
+unrelated stable one could hide a real write behind an unchanged string — so
+the strongest claim in the project rested on a guess. Naming it is an
+assertion a human can make and Vetit cannot. Without one, the probe reports
+`P-05` at medium — *the response talks as though it wrote, and nothing
+confirmed it* — which is the honest ceiling on what an unassisted probe can
+say.
 
 ---
 
@@ -133,7 +145,7 @@ npx vetit-decoy-mcp --poison        # the same target after a rug pull
 | `check_shadowing` | **write** | Finds descriptions naming other servers' tools (D-09). Records them |
 | `compute_risk` | read | Adds up the stored findings. Arithmetic, no model |
 | `lookup_advisories` | read | Returns searches to run with `exa`. Never an advisory it made up |
-| `probe_tool` | **destructive** | Calls one tool for real and compares behaviour with claims |
+| `probe_tool` | **destructive** | Calls one tool for real and compares behaviour with claims. Needs `read_back_tool` to prove a write |
 | `quarantine_server` | **write** | Stage 1: register with every tool switched off |
 | `write_admission` | **destructive** | Stage 3: write the permission list |
 
@@ -230,7 +242,10 @@ run, and the gap is reported as **what was not covered, never as a pass**.
   nothing. Behaviour is only verified for tools that were actually probed, and
   the report names the rest.
 - **The tripwire proves guilt, not innocence.** Nothing arriving at the
-  collector means nothing arrived at *that* collector, during *that* call.
+  collector means nothing arrived at *that* collector, during *that* call. And
+  a target that cannot reach the collector at all — anything not on this
+  machine, unless `VETIT_COLLECTOR_PUBLIC_URL` says otherwise — is reported as
+  `egress: not_performed` rather than as clean.
 - **Vetit is itself an MCP server**, so it has the same trust problem it
   solves. What we can offer: it is open source, its own tool descriptions are
   short and contain no instructions, its annotations are honest and tested, and
@@ -244,9 +259,10 @@ run, and the gap is reported as **what was not covered, never as a pass**.
   corrected version — but the honest lesson is that getting your own
   annotations right is harder than it sounds, which is rather the point of the
   whole project.
-- **A read-back needs a read-only tool to exist.** Where a target has none, a
-  write can happen unobserved. The probe says so rather than reporting a clean
-  result.
+- **A probe only proves what a nominated reader can show.** Without a
+  `read_back_tool` the probe compares nothing and says so; with one, it proves
+  only what that reader observes. A write to state no reader exposes happens
+  unobserved either way.
 
 ## Scope
 
