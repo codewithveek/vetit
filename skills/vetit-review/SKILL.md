@@ -35,9 +35,15 @@ against every restriction.
 
 ### 1. Put it on hold
 
-`quarantine_server(url, name, auth?)` — registers the target with
-`disable_tools: ["@all"]`. Every server lands here first, before anything else
-happens. This pauses for approval.
+`quarantine_server(url, name, agent_name, auth?)` — registers the target as a
+connector and writes it into `agent_name` with `disable_tools: ["@all"]`. Every
+server lands here first, before anything else happens. This pauses for approval.
+
+`agent_name` is the agent being restricted, and it is not decoration: tool
+permissions are a property of an agent, not of a connector. A connector says
+where a server is and holds its credential; what may be called is written on
+whoever would call it. Ask the user which agent this server is for if it is not
+obvious.
 
 If the user has no TrueForge instance running, skip this and say the review is
 running without the quarantine step, so nothing is being held.
@@ -142,9 +148,11 @@ that as a clean server.
 
 ### 8. Let it in
 
-`write_admission(manifest_id, connector_name, not_covered, apply)` —
-**after an approval pause**. Call it first with `apply: false` to show the
-proposed grant, then again with `apply: true` once a human has agreed.
+`write_admission(manifest_id, connector_name, agent_name, not_covered, apply)`
+— **after an approval pause**. Call it first with `apply: false` to show the
+proposed grant, then again with `apply: true` once a human has agreed. The
+grant is written into that agent's entry for this server, which is the only
+place the harness keeps tool permissions.
 
 ## Severity, and the score
 

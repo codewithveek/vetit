@@ -14,6 +14,11 @@ VETIT_PORT="${VETIT_PORT:-8930}"
 DECOY_PORT="${DECOY_PORT:-8931}"
 COLLECTOR_PORT="${VETIT_COLLECTOR_PORT:-8999}"
 STARTUP_TIMEOUT="${VETIT_STARTUP_TIMEOUT:-30}"
+# The address TrueForge is told to reach these servers on. Loopback is right
+# when TrueForge runs on this machine. A TrueForge in a container needs an
+# address that means "the host" from inside it — host.docker.internal on
+# Docker Desktop — or every connector it registers points at itself.
+ADVERTISED_HOST="${VETIT_ADVERTISED_HOST:-127.0.0.1}"
 # The decoy runs on this machine, so loopback is reachable. A target on another
 # host or in a container would need VETIT_COLLECTOR_PUBLIC_URL set to an address
 # it can actually call, or egress is reported as not observed rather than clean.
@@ -25,6 +30,7 @@ CANARY_VALUE="${VETIT_CANARY_VALUE:-vetit-canary-not-a-real-secret}"
 # names the skill — that name resolves to nothing until this registration
 # exists, so it has to happen before the agent is created.
 SKILL_NAME="vetit-review"
+SKILL_DESCRIPTION="Review an MCP server before it is trusted, and produce a least-privilege permission list a human approves."
 SKILL_PATH="${VETIT_SKILL_PATH:-skills/vetit-review}"
 SKILL_REF="${VETIT_SKILL_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SKILLS_ENDPOINT="${TRUEFORGE_SKILLS_PATH:-/api/v1/settings/skills}"
@@ -52,19 +58,25 @@ SKILL_REPO_URL="${VETIT_SKILL_REPO_URL:-$(to_https_repo_url "$(git -C "$ROOT" co
 # exactly like a successful one, and setup went on to print "Ready".
 #
 # Returns 0 on 2xx, 1 on an HTTP error, 2 when no response arrived at all —
-# which is what "no TrueForge running" looks like.
-post_json() {
-  local label="$1" url="$2" body="$3"
+# which is what "no TrueForge running" looks like — and 3 on a 409, so a caller
+# can upgrade a create into a replace.
+send_json() {
+  local method="$1" label="$2" url="$3" body="$4"
   local response_file code status
   response_file="$(mktemp)"
-  set +e
+  status=0
+  # `|| status=$?` rather than `set +e`: errexit is global, so a helper that
+  # switched it back on left it armed in its caller, and the next non-zero
+  # return killed the whole script silently.
   code="$(curl -sS -o "$response_file" -w '%{http_code}' --max-time 20 \
-    -X POST "$url" -H 'content-type: application/json' -d "$body")"
-  status=$?
-  set -e
+    -X "$method" "$url" -H 'content-type: application/json' -d "$body")" || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f "$response_file"
     return 2
+  fi
+  if [ "$code" = '409' ]; then
+    rm -f "$response_file"
+    return 3
   fi
   if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
     printf '  %s failed: HTTP %s\n' "$label" "$code" >&2
@@ -74,6 +86,51 @@ post_json() {
   fi
   rm -f "$response_file"
   return 0
+}
+
+# Setup gets re-run — after a reboot, after a port change, by a judge reading
+# the README twice. Creating is not idempotent and a second run died on
+# "name already exists", so a conflict becomes a replace.
+post_json() {
+  local label="$1" url="$2" body="$3"
+  local status
+  status=0
+  send_json POST "$label" "$url" "$body" || status=$?
+  if [ "$status" -ne 3 ]; then return "$status"; fi
+  echo "  (already registered — replacing)"
+  status=0
+  send_json PUT "$label" "$url" "$body" || status=$?
+  return "$status"
+}
+
+# Agents are replaced by immutable id rather than by name, so a conflict here
+# means looking the id up first.
+upsert_agent() {
+  local manifest="$1" status agent_id
+  status=0
+  send_json POST "agent creation" \
+    "${TRUEFORGE_BASE_URL}/api/v1/agents" \
+    "{\"name\":\"vetit\",\"manifest\":${manifest}}" || status=$?
+  if [ "$status" -ne 3 ]; then return "$status"; fi
+
+  echo "  (agent exists — replacing its manifest)"
+  agent_id="$(curl -sS --max-time 20 "${TRUEFORGE_BASE_URL}/api/v1/agents" | node -e '
+    let raw = "";
+    process.stdin.on("data", (chunk) => { raw += chunk; });
+    process.stdin.on("end", () => {
+      const found = JSON.parse(raw).data.find((agent) => agent.name === "vetit");
+      process.stdout.write(found === undefined ? "" : found.id);
+    });
+  ')"
+  if [ -z "$agent_id" ]; then
+    printf '  agent update failed: the name is taken but no agent named vetit was listed\n' >&2
+    return 1
+  fi
+  status=0
+  send_json PUT "agent update" \
+    "${TRUEFORGE_BASE_URL}/api/v1/agents/${agent_id}" \
+    "{\"manifest\":${manifest}}" || status=$?
+  return "$status"
 }
 
 # --- servers ----------------------------------------------------------------
@@ -139,12 +196,10 @@ wait_for_server "vetit-decoy-mcp" "$DECOY_PID" "http://127.0.0.1:${DECOY_PORT}/m
 TRUEFORGE_REACHABLE=1
 
 log "Registering the Vetit MCP server as a TrueForge connector"
-set +e
+connector_status=0
 post_json "connector registration" \
   "${TRUEFORGE_BASE_URL}/api/v1/settings/mcp-servers" \
-  "{\"name\":\"vetit\",\"url\":\"http://127.0.0.1:${VETIT_PORT}/mcp\"}"
-connector_status=$?
-set -e
+  "{\"manifest\":{\"type\":\"remote\",\"name\":\"vetit\",\"url\":\"http://${ADVERTISED_HOST}:${VETIT_PORT}/mcp\",\"description\":\"Vetit - reviews an MCP server before it is trusted.\"}}" \n  || connector_status=$?
 case "$connector_status" in
   0) ;;
   2) TRUEFORGE_REACHABLE=0; echo "  (skipped — no TrueForge at ${TRUEFORGE_BASE_URL})" ;;
@@ -157,25 +212,56 @@ if [ "$TRUEFORGE_REACHABLE" -eq 1 ]; then
     fail "No git remote, so the skill has no repository to be fetched from. Set VETIT_SKILL_REPO_URL to an HTTPS url TrueForge can clone, then run this again."
   fi
   echo "  ${SKILL_REPO_URL} — ${SKILL_PATH} @ ${SKILL_REF}"
-  set +e
+  skill_status=0
   post_json "skill registration" \
     "${TRUEFORGE_BASE_URL}${SKILLS_ENDPOINT}" \
-    "{\"name\":\"${SKILL_NAME}\",\"repository_url\":\"${SKILL_REPO_URL}\",\"path\":\"${SKILL_PATH}\",\"ref\":\"${SKILL_REF}\"}"
-  skill_status=$?
-  set -e
+    "{\"manifest\":{\"type\":\"git\",\"name\":\"${SKILL_NAME}\",\"url\":\"${SKILL_REPO_URL}\",\"ref\":\"${SKILL_REF}\",\"path\":\"${SKILL_PATH}\",\"description\":\"${SKILL_DESCRIPTION}\"}}" \n    || skill_status=$?
   if [ "$skill_status" -ne 0 ]; then
     fail "Skill registration failed. The agent was not created, because it would have had no review playbook."
   fi
 
+  # The agent manifest names `exa` for the advisory cross-check, and TrueForge
+  # refuses to create an agent that references a connector nobody registered.
+  # Exa needs a key we have no business inventing, so it is registered when one
+  # is supplied and dropped from the manifest when it is not — a review that
+  # runs without the cross-check, rather than a setup that will not run.
+  EXA_READY=0
+  if [ -n "${EXA_API_KEY:-}" ]; then
+    log "Registering the exa connector"
+    exa_status=0
+    post_json "exa registration" \
+      "${TRUEFORGE_BASE_URL}/api/v1/settings/mcp-servers" \
+      "{\"manifest\":{\"type\":\"remote\",\"name\":\"exa\",\"url\":\"${EXA_MCP_URL:-https://mcp.exa.ai/mcp}\",\"description\":\"Exa search, used for the advisory cross-check.\",\"auth\":{\"type\":\"header\",\"headers\":{\"Authorization\":\"Bearer ${EXA_API_KEY}\"}}}}" \n      || exa_status=$?
+    if [ "$exa_status" -ne 0 ]; then
+      fail "exa registration failed. Unset EXA_API_KEY to set up without the cross-check pass."
+    fi
+    EXA_READY=1
+  fi
+
   log "Creating the Vetit agent"
-  set +e
-  post_json "agent creation" \
-    "${TRUEFORGE_BASE_URL}/api/v1/agents" \
-    "{\"name\":\"vetit\",\"manifest\":$(cat agent/vetit-agent.json)}"
-  agent_status=$?
-  set -e
+  AGENT_MANIFEST="$(EXA_READY="$EXA_READY" node -e '
+    const fs = require("node:fs");
+    const manifest = JSON.parse(fs.readFileSync("agent/vetit-agent.json", "utf8"));
+    if (process.env.EXA_READY !== "1") {
+      manifest.mcp_servers = manifest.mcp_servers.filter((s) => s.name !== "exa");
+    }
+    process.stdout.write(JSON.stringify(manifest));
+  ')"
+  agent_status=0
+  upsert_agent "$AGENT_MANIFEST" || agent_status=$?
   if [ "$agent_status" -ne 0 ]; then
-    fail "Agent creation failed."
+    fail "Agent creation failed — the response above says why. The two
+prerequisites TrueForge will not create an agent without:
+
+  * a model provider, for the model named in agent/vetit-agent.json
+  * a sandbox provider, because the review playbook is a git-backed skill and
+    skills are materialised in a sandbox
+
+TrueForge falls back to a local sandbox on macOS and Linux with nothing to
+configure. On Windows there is no local provider, so a sandbox has to be
+registered before the agent will accept the skill.
+
+Configure both in TrueForge settings, then run this again."
   fi
 fi
 
@@ -192,6 +278,13 @@ if [ "$TRUEFORGE_REACHABLE" -eq 1 ]; then
 
   Ask the agent:  review the MCP server at http://127.0.0.1:${DECOY_PORT}/mcp
 AGENT_READY
+  if [ "$EXA_READY" -ne 1 ]; then
+    cat <<NO_EXA
+
+  No EXA_API_KEY was set, so the agent was created without the exa connector.
+  Every pass runs except the advisory cross-check, and the report will say so.
+NO_EXA
+  fi
 else
   cat <<NO_TRUEFORGE
 

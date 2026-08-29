@@ -6,7 +6,7 @@ import { readStoredManifest } from '../manifest/index.js';
 import { buildGuardedToolResult } from '../../shared/redaction/index.js';
 import {
   registerQuarantinedServer,
-  writeConnectorPermissions,
+  writeAgentServerEntry,
 } from '../../shared/trueforge-client/index.js';
 import { buildScopedGrant } from './build-grant.js';
 import { findReasonToRefuse } from './refuse-to-apply.js';
@@ -28,18 +28,66 @@ const authSchema = z
       'throwaway credential with the smallest access that works.',
   );
 
+const agentNameSchema = z
+  .string()
+  .describe(
+    'Agent the hold is written to. Tool permissions live on an agent, not on ' +
+      'a connector, so this is the subject of the restriction.',
+  );
+
+interface QuarantineRequest {
+  readonly url: string;
+  readonly name: string;
+  readonly agentName: string;
+  readonly auth?: unknown;
+}
+
+/**
+ * Register, then hold — two objects, because the harness keeps them apart.
+ *
+ * The connector says where the server is and carries the credential. The
+ * agent's entry says what may be called. Registering alone leaves a server
+ * attached to nothing, which is already unreachable; the explicit
+ * `disable_tools: ["@all"]` is written so the hold is visible to anyone
+ * reading the agent rather than inferred from an absence.
+ */
+async function holdServer(request: QuarantineRequest): Promise<CallToolResult> {
+  const connector = await registerQuarantinedServer({
+    name: request.name,
+    url: request.url,
+    ...(request.auth === undefined ? {} : { auth: request.auth }),
+  });
+  const agent = await writeAgentServerEntry({
+    agentName: request.agentName,
+    entry: { name: connector.name, disable_tools: ['@all'] },
+  });
+  return buildGuardedToolResult({
+    connector: connector.name,
+    agent: agent.name,
+    status: 'on_hold',
+    disable_tools: ['@all'],
+    note:
+      'Held with disable_tools ["@all"], not enable_tools []. An absent ' +
+      'enable_tools falls back to ["@all"], and disable_tools is subtracted ' +
+      'from whatever is enabled, so this phrasing is the only one that leaves ' +
+      'nothing callable. The credential, if any, went to the harness with the ' +
+      'connector and was never read back.',
+  });
+}
+
 function registerQuarantine(server: McpServer): void {
   server.registerTool(
     'quarantine_server',
     {
       title: 'Quarantine server',
       description:
-        'Stage 1: registers a target as a TrueForge connector with every tool ' +
-        'switched off. The harness stores the credential; Vetit never sees it. ' +
-        'Every server lands here first.',
+        'Stage 1: registers a target as a TrueForge connector and writes it ' +
+        'into an agent with every tool switched off. The harness stores the ' +
+        'credential; Vetit never sees it. Every server lands here first.',
       inputSchema: {
         url: z.string().url().describe('Streamable HTTP endpoint of the target.'),
         name: z.string().describe('Connector name to register it under.'),
+        agent_name: agentNameSchema,
         auth: authSchema,
       },
       annotations: {
@@ -49,29 +97,20 @@ function registerQuarantine(server: McpServer): void {
         openWorldHint: true,
       },
     },
-    async ({ url, name, auth }) => {
-      const record = await registerQuarantinedServer({
-        name,
+    async ({ url, name, agent_name, auth }) =>
+      await holdServer({
         url,
+        name,
+        agentName: agent_name,
         ...(auth === undefined ? {} : { auth }),
-      });
-      return buildGuardedToolResult({
-        connector: record.name,
-        status: 'on_hold',
-        disable_tools: ['@all'],
-        note:
-          'Registered with disable_tools ["@all"], not enable_tools []. An ' +
-          'absent enable_tools falls back to ["@all"], and disable_tools is ' +
-          'subtracted from whatever is enabled, so this phrasing is the only ' +
-          'one that leaves nothing callable.',
-      });
-    },
+      }),
   );
 }
 
 const admissionInput = {
   manifest_id: z.string().describe('Manifest the decision is based on.'),
-  connector_name: z.string().describe('Connector to write the permission list to.'),
+  connector_name: z.string().describe('Connector the review was performed on.'),
+  agent_name: agentNameSchema,
   not_covered: z
     .array(z.string())
     .default([])
@@ -90,6 +129,7 @@ const admissionInput = {
 
 interface WriteAdmissionRequest {
   readonly connectorName: string;
+  readonly agentName: string;
   readonly notCovered: readonly string[];
   readonly apply: boolean;
 }
@@ -137,13 +177,21 @@ async function handleWriteAdmission(
     return buildGuardedToolResult({ applied: false, refused: refusal, grant });
   }
 
-  const record = await writeConnectorPermissions({
-    name: grant.name,
-    enableTools: grant.enable_tools,
-    disableTools: grant.disable_tools,
-    requireApprovalForTools: grant.require_approval_for_tools,
+  const agent = await writeAgentServerEntry({
+    agentName: request.agentName,
+    entry: {
+      name: grant.name,
+      enable_tools: [...grant.enable_tools],
+      disable_tools: [...grant.disable_tools],
+      require_approval_for_tools: [...grant.require_approval_for_tools],
+    },
   });
-  return buildGuardedToolResult({ applied: true, connector: record.name, grant });
+  return buildGuardedToolResult({
+    applied: true,
+    connector: grant.name,
+    agent: agent.name,
+    grant,
+  });
 }
 
 function registerWriteAdmission(server: McpServer): void {
@@ -153,8 +201,9 @@ function registerWriteAdmission(server: McpServer): void {
       title: 'Write admission',
       description:
         'Stage 3: builds the least-privilege permission list from the ' +
-        'recorded findings and, when apply is true, writes it to the ' +
-        'connector. Every restriction cites the finding that caused it.',
+        'recorded findings and, when apply is true, writes it into the ' +
+        "agent's entry for this server. Every restriction cites the finding " +
+        'that caused it.',
       inputSchema: admissionInput,
       annotations: {
         readOnlyHint: false,
@@ -163,10 +212,15 @@ function registerWriteAdmission(server: McpServer): void {
         openWorldHint: true,
       },
     },
-    async ({ manifest_id, connector_name, not_covered, apply }) =>
+    async ({ manifest_id, connector_name, agent_name, not_covered, apply }) =>
       await handleWriteAdmission({
         manifestId: manifest_id,
-        request: { connectorName: connector_name, notCovered: not_covered, apply },
+        request: {
+          connectorName: connector_name,
+          agentName: agent_name,
+          notCovered: not_covered,
+          apply,
+        },
       }),
   );
 }

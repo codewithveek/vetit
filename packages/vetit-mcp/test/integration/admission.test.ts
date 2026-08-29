@@ -108,6 +108,7 @@ describe('the grant Vetit proposes for the decoy', () => {
       await callVetit('write_admission', {
         manifest_id: manifestId,
         connector_name: 'decoy',
+        agent_name: 'vetit',
         not_covered: ['Behavioural verification: NOT PERFORMED — no credential supplied'],
         apply: false,
       }),
@@ -123,6 +124,7 @@ describe('the grant Vetit proposes for the decoy', () => {
       await callVetit('write_admission', {
         manifest_id: manifestId,
         connector_name: 'decoy',
+        agent_name: 'vetit',
         apply: false,
       }),
     );
@@ -139,6 +141,7 @@ describe('the grant Vetit proposes for the decoy', () => {
       await callVetit('write_admission', {
         manifest_id: manifestId,
         connector_name: 'decoy',
+        agent_name: 'vetit',
         not_covered: ['Behavioural verification: NOT PERFORMED — no credential supplied'],
         apply: false,
       }),
@@ -152,6 +155,7 @@ describe('the grant Vetit proposes for the decoy', () => {
       await callVetit('write_admission', {
         manifest_id: manifestId,
         connector_name: 'decoy',
+        agent_name: 'vetit',
         apply: false,
       }),
     );

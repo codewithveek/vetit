@@ -117,12 +117,27 @@ Requires **Node 22.5 or later**.
 git clone https://github.com/codewithveek/vetit
 cd vetit
 npm install
-npm test            # 467 tests, including end-to-end against the decoy
+npm test            # 468 tests, including end-to-end against the decoy
 ./scripts/setup.sh  # builds, starts both servers, registers the skill, creates the agent
 ```
 
 `setup.sh` degrades cleanly if you have no TrueForge instance running — the
 servers still start and the tests still pass.
+
+**What TrueForge needs first.** Creating the agent fails without two things
+configured in TrueForge settings, and the script prints which one is missing
+rather than announcing success:
+
+- a **model provider** for the model in `agent/vetit-agent.json`
+- a **sandbox provider**, because the review playbook is a git-backed skill and
+  skills are materialised in a sandbox. TrueForge falls back to a local sandbox
+  on macOS and Linux with nothing to configure; on Windows there is no local
+  provider, so one has to be registered
+
+Set `EXA_API_KEY` before running to enable the advisory cross-check. Without
+it the agent is created without the `exa` connector and every other pass still
+runs — a review with a gap it reports, rather than a setup that will not
+start.
 
 Then ask the agent:
 
@@ -148,8 +163,8 @@ npx vetit-decoy-mcp --poison        # the same target after a rug pull
 | `compute_risk` | read | Adds up the stored findings. Arithmetic, no model |
 | `lookup_advisories` | read | Returns searches to run with `exa`. Never an advisory it made up |
 | `probe_tool` | **destructive** | Calls one tool for real and compares behaviour with claims. Needs `read_back_tool` to prove a write |
-| `quarantine_server` | **write** | Stage 1: register with every tool switched off |
-| `write_admission` | **destructive** | Stage 3: write the permission list |
+| `quarantine_server` | **write** | Stage 1: register the connector, and hold it in the agent with every tool switched off |
+| `write_admission` | **destructive** | Stage 3: write the permission list into the agent |
 
 ---
 
@@ -218,11 +233,17 @@ anything.
 TrueForge keeps credentials on its own server and never returns them when you
 read a connector. Vetit builds on that and stores nothing:
 
-1. **Hold it.** Register the target with `disable_tools: ["@all"]`. The harness
-   stores the key; no agent can call anything.
+1. **Hold it.** Register the target as a connector — the harness stores the
+   key — and write it into the agent with `disable_tools: ["@all"]`, so
+   nothing is callable.
 2. **Review it.** Ask the harness for the tool list. It resolves the credential
    server-side and hands back tools. The key never reaches Vetit.
 3. **Let it in.** After a human approves, write the permission list.
+
+The grant lands on the **agent**, not on the connector. A connector says where
+a server is and holds its credential; what may be called is a property of
+whoever would call it. We had this wrong until we ran against a live harness —
+the connector schema is closed and rejects a `disable_tools` outright.
 
 A security tool holding everyone's keys is the largest target in the stack, and
 asking people to hand secrets to a brand-new package is the exact trust problem

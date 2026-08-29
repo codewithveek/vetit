@@ -3,10 +3,14 @@ import {
   resolveTrueforgeEndpoint,
 } from './trueforge.config.js';
 import {
-  mcpServerRecordSchema,
+  agentResponseSchema,
+  connectorResponseSchema,
+  listAgentsResponseSchema,
   mcpServerToolsResponseSchema,
-  type McpServerRecord,
+  type AgentServerEntry,
+  type ConfiguredConnector,
   type McpServerTool,
+  type TrueforgeAgent,
 } from './trueforge.schema.js';
 
 /**
@@ -16,9 +20,27 @@ import {
  * every tool switched off, its tools are listed *by the harness* so the
  * credential resolves server-side, and only then can a permission list be
  * written. Vetit never sees the key at any point in that sequence.
+ *
+ * One thing the spec got wrong about the harness, found by running against a
+ * real one rather than by reading. A connector carries `type`, `name`, `url`,
+ * `description` and `auth`, and nothing else — the schema is closed, so a
+ * `disable_tools` sent alongside them is a 400, not an ignored field. Tool
+ * gating is a property of an **agent**: `enable_tools`, `disable_tools` and
+ * `require_approval_for_tools` live on the agent's `mcp_servers` entry.
+ *
+ * The security model is untouched by that. Vetit still never holds a
+ * credential, servers are still held with everything switched off before
+ * anything else happens, and the hold is still written as
+ * `disable_tools: ["@all"]` rather than `enable_tools: []`. Only the object
+ * carrying the grant is different, and it is different because that is where
+ * the harness keeps it.
  */
 
-const MCP_SERVERS_PATH = '/api/v1/settings/mcp-servers';
+const CONNECTORS_PATH = '/api/v1/settings/mcp-servers';
+/** Listing a connector's tools is not under `/settings` — a 404 taught us. */
+const CONNECTOR_TOOLS_PATH = '/api/v1/mcp-servers';
+const AGENTS_PATH = '/api/v1/agents';
+const CONFLICT_STATUS = 409;
 
 export interface TrueforgeRequest {
   readonly path: string;
@@ -93,7 +115,7 @@ async function callTrueforge(request: TrueforgeRequest): Promise<unknown> {
   return await response.json();
 }
 
-/** Stage 1 of §6. `disable_tools: ["@all"]`, never `enable_tools: []`. */
+/** Stage 1 of §6. The connector, and only what a connector can carry. */
 export interface QuarantineRegistration {
   readonly name: string;
   readonly url: string;
@@ -101,21 +123,41 @@ export interface QuarantineRegistration {
   readonly auth?: unknown;
 }
 
-export async function registerQuarantinedServer(
+const HOLD_DESCRIPTION =
+  'Registered by Vetit for review. Not attached to any agent until a human ' +
+  'approves a grant.';
+
+function buildConnectorManifest(
   registration: QuarantineRegistration,
-): Promise<McpServerRecord> {
-  const payload = {
+): Record<string, unknown> {
+  return {
+    type: 'remote',
     name: registration.name,
     url: registration.url,
-    disable_tools: ['@all'],
+    description: HOLD_DESCRIPTION,
     ...(registration.auth === undefined ? {} : { auth: registration.auth }),
   };
-  const raw = await callTrueforge({
-    path: MCP_SERVERS_PATH,
-    method: 'POST',
-    body: payload,
-  });
-  return mcpServerRecordSchema.parse(raw);
+}
+
+/**
+ * Registering is a create, and a create fails on a name already taken. A
+ * review being re-run is normal, so a conflict upgrades to a replace rather
+ * than failing the whole quarantine step.
+ */
+export async function registerQuarantinedServer(
+  registration: QuarantineRegistration,
+): Promise<ConfiguredConnector> {
+  const body = { manifest: buildConnectorManifest(registration) };
+  try {
+    const raw = await callTrueforge({ path: CONNECTORS_PATH, method: 'POST', body });
+    return connectorResponseSchema.parse(raw).data;
+  } catch (error) {
+    if (!(error instanceof TrueforgeRequestError) || error.status !== CONFLICT_STATUS) {
+      throw error;
+    }
+    const raw = await callTrueforge({ path: CONNECTORS_PATH, method: 'PUT', body });
+    return connectorResponseSchema.parse(raw).data;
+  }
 }
 
 /** Stage 2 of §6: the harness resolves the credential and lists the tools. */
@@ -123,57 +165,75 @@ export async function listConnectorTools(
   connectorName: string,
 ): Promise<readonly McpServerTool[]> {
   const raw = await callTrueforge({
-    path: `${MCP_SERVERS_PATH}/${encodeURIComponent(connectorName)}/tools`,
+    path: `${CONNECTOR_TOOLS_PATH}/${encodeURIComponent(connectorName)}/tools`,
     method: 'GET',
   });
-  return mcpServerToolsResponseSchema.parse(raw).tools;
+  return mcpServerToolsResponseSchema.parse(raw).data;
 }
 
 export async function readConnector(
   connectorName: string,
-): Promise<McpServerRecord> {
+): Promise<ConfiguredConnector> {
   const raw = await callTrueforge({
-    path: `${MCP_SERVERS_PATH}/${encodeURIComponent(connectorName)}`,
+    path: `${CONNECTORS_PATH}/${encodeURIComponent(connectorName)}`,
     method: 'GET',
   });
-  return mcpServerRecordSchema.parse(raw);
+  return connectorResponseSchema.parse(raw).data;
 }
 
-/** Stage 3 of §6: coming off hold, with a written list of what is allowed. */
-export interface ConnectorPermissions {
-  readonly name: string;
-  readonly enableTools: readonly string[];
-  readonly disableTools: readonly string[];
-  readonly requireApprovalForTools: readonly string[];
+/**
+ * Agents are addressed by an immutable id, and named by a human. Everything
+ * Vetit is told refers to the name, so the id is looked up rather than asked
+ * for.
+ */
+export async function findAgentByName(agentName: string): Promise<TrueforgeAgent> {
+  const raw = await callTrueforge({ path: AGENTS_PATH, method: 'GET' });
+  const agent = listAgentsResponseSchema
+    .parse(raw)
+    .data.find((candidate) => candidate.name === agentName);
+  if (agent === undefined) {
+    throw new TrueforgeRequestError(
+      404,
+      `No agent named ${agentName} is configured. A grant has to be written ` +
+        'to an agent: that is where the harness keeps tool permissions.',
+    );
+  }
+  return agent;
 }
 
-export async function writeConnectorPermissions(
-  permissions: ConnectorPermissions,
-): Promise<McpServerRecord> {
+export interface AgentServerEntryUpdate {
+  readonly agentName: string;
+  readonly entry: AgentServerEntry;
+}
+
+function replaceServerEntry(
+  agent: TrueforgeAgent,
+  entry: AgentServerEntry,
+): readonly AgentServerEntry[] {
+  const existing = agent.manifest.mcp_servers ?? [];
+  const without = existing.filter((candidate) => candidate.name !== entry.name);
+  return [...without, entry];
+}
+
+/**
+ * Read, change one entry, write the whole thing back.
+ *
+ * The update endpoint replaces an agent's entire manifest, so sending only the
+ * server block would delete the model, the instructions and the skills along
+ * with it. Everything else is carried through untouched.
+ */
+export async function writeAgentServerEntry(
+  update: AgentServerEntryUpdate,
+): Promise<TrueforgeAgent> {
+  const agent = await findAgentByName(update.agentName);
+  const manifest = {
+    ...agent.manifest,
+    mcp_servers: [...replaceServerEntry(agent, update.entry)],
+  };
   const raw = await callTrueforge({
-    path: MCP_SERVERS_PATH,
+    path: `${AGENTS_PATH}/${encodeURIComponent(agent.id)}`,
     method: 'PUT',
-    body: {
-      name: permissions.name,
-      enable_tools: [...permissions.enableTools],
-      disable_tools: [...permissions.disableTools],
-      require_approval_for_tools: [...permissions.requireApprovalForTools],
-    },
+    body: { manifest },
   });
-  return mcpServerRecordSchema.parse(raw);
-}
-
-export interface AgentServerBlockUpdate {
-  readonly agentId: string;
-  readonly mcpServers: readonly unknown[];
-}
-
-export async function updateAgentServerBlock(
-  update: AgentServerBlockUpdate,
-): Promise<void> {
-  await callTrueforge({
-    path: `/api/v1/agents/${encodeURIComponent(update.agentId)}`,
-    method: 'PUT',
-    body: { mcp_servers: [...update.mcpServers] },
-  });
+  return agentResponseSchema.parse(raw).data;
 }
