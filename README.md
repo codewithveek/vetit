@@ -181,8 +181,8 @@ result works, and they are all in the repository to be run.
 ## Qodo Code Review Evidence
 
 Qodo was installed on this repository before the first pull request, and every
-piece of work went through one. Twelve PRs, eight review rounds, **41 findings**
-— all fixed but one, which was dismissed with a reason in the thread.
+piece of work went through one. 12 PRs, 8 review rounds, **41 findings**
+were all fixed but one, which was dismissed with a reason in the thread.
 
 **Merged pull request containing hackathon code:**
 [#6 — `feat/review-tools`](https://github.com/codewithveek/vetit/pull/6)
@@ -207,17 +207,16 @@ argument is that servers lie in exactly that field had got its own labels
 wrong. Both were fixed in
 [`0d8e21f`](https://github.com/codewithveek/vetit/commit/0d8e21f), along with a
 redaction bypass in the same review: the transport-boundary guard trusted any
-string that *started with* the clean-snippet prefix, so attacker-controlled
+string that _started with_ the clean-snippet prefix, so attacker-controlled
 text could forge the prefix and skip cleaning entirely. Prefix-trust was
 replaced with invariant checking.
 
 **The one dismissed, and why.** On #5 Qodo reported that `check_shadowing`'s
-installed-tool list defaulted to empty, silently disabling D-09's signal — a
-real bug — and prescribed defaulting to the manifest's own tool names. That fix
+installed-tool list defaulted to empty, silently disabling D-09's signal as a
+real bug and advised defaulting to the manifest's own tool names. That fix
 would have been worse than the bug: D-09 exists to catch a server naming tools
-belonging to *other* servers, so defaulting to its own tools would make "call
-`list_spaces` first" — which honest servers write constantly — a critical
-finding worth 40 risk points. The argument was made required instead, with no
+belonging to _other_ servers, so defaulting to its own tools would have caused a "call
+`list_spaces` first" — which honest servers write constantly, The argument are now required instead, with no
 default at all, and the reasoning is pinned in
 [`run-detectors.ts`](packages/vetit-mcp/src/features/detection/run-detectors.ts)
 next to the code.
@@ -231,20 +230,20 @@ clean review from an absent one.
 **Review history:** every branch below was opened as its own pull request, so
 the trail runs through the build rather than being bolted on at the end.
 
-| PR | Branch | What it adds | Findings |
-| -- | ------ | ------------ | -------- |
-| [#1](https://github.com/codewithveek/vetit/pull/1) | `chore/repo-scaffold` | Strict TypeScript, ESLint, CI — before any feature code | — |
-| [#2](https://github.com/codewithveek/vetit/pull/2) | `feat/decoy-mcp` | The server we are allowed to attack | 2 |
-| [#3](https://github.com/codewithveek/vetit/pull/3) | `feat/redaction` | Cleaning untrusted text before it can reach the agent | 3 |
-| [#4](https://github.com/codewithveek/vetit/pull/4) | `feat/manifest` | Listing a target and hashing what matters | 8 |
-| [#5](https://github.com/codewithveek/vetit/pull/5) | `feat/detection` | D-01 to D-10 and the risk score | 9 |
-| [#6](https://github.com/codewithveek/vetit/pull/6) | `feat/review-tools` | The Vetit server and its review tools | 5 |
-| [#7](https://github.com/codewithveek/vetit/pull/7) | `feat/admission` | Quarantine, scoped grant, `write_admission` | — |
-| [#8](https://github.com/codewithveek/vetit/pull/8) | `feat/probing` | `probe_tool` and the tripwire | 7 |
-| [#9](https://github.com/codewithveek/vetit/pull/9) | `feat/agent-and-skill` | Agent manifest, review playbook, setup script | 6 |
-| [#10](https://github.com/codewithveek/vetit/pull/10) | `docs/readme` | This file and `docs/ARCHITECTURE.md` | — |
-| [#11](https://github.com/codewithveek/vetit/pull/11) | `fix/test-timeouts` | Timeout headroom for the integration tests | — |
-| [#12](https://github.com/codewithveek/vetit/pull/12) | `test/tripwire-e2e` | The tripwire, end to end against the decoy | 1 |
+| PR                                                   | Branch                 | What it adds                                            | Findings |
+| ---------------------------------------------------- | ---------------------- | ------------------------------------------------------- | -------- |
+| [#1](https://github.com/codewithveek/vetit/pull/1)   | `chore/repo-scaffold`  | Strict TypeScript, ESLint, CI — before any feature code | —        |
+| [#2](https://github.com/codewithveek/vetit/pull/2)   | `feat/decoy-mcp`       | The server we are allowed to attack                     | 2        |
+| [#3](https://github.com/codewithveek/vetit/pull/3)   | `feat/redaction`       | Cleaning untrusted text before it can reach the agent   | 3        |
+| [#4](https://github.com/codewithveek/vetit/pull/4)   | `feat/manifest`        | Listing a target and hashing what matters               | 8        |
+| [#5](https://github.com/codewithveek/vetit/pull/5)   | `feat/detection`       | D-01 to D-10 and the risk score                         | 9        |
+| [#6](https://github.com/codewithveek/vetit/pull/6)   | `feat/review-tools`    | The Vetit server and its review tools                   | 5        |
+| [#7](https://github.com/codewithveek/vetit/pull/7)   | `feat/admission`       | Quarantine, scoped grant, `write_admission`             | —        |
+| [#8](https://github.com/codewithveek/vetit/pull/8)   | `feat/probing`         | `probe_tool` and the tripwire                           | 7        |
+| [#9](https://github.com/codewithveek/vetit/pull/9)   | `feat/agent-and-skill` | Agent manifest, review playbook, setup script           | 6        |
+| [#10](https://github.com/codewithveek/vetit/pull/10) | `docs/readme`          | This file and `docs/ARCHITECTURE.md`                    | —        |
+| [#11](https://github.com/codewithveek/vetit/pull/11) | `fix/test-timeouts`    | Timeout headroom for the integration tests              | —        |
+| [#12](https://github.com/codewithveek/vetit/pull/12) | `test/tripwire-e2e`    | The tripwire, end to end against the decoy              | 1        |
 
 High-severity findings were fixed, or dismissed in the Qodo thread with a
 reason. Medium and low were judged case by case.
@@ -355,11 +354,11 @@ permission than using it would.
 **Probing** — `probe_tool` — calls a tool for real, so it needs the right to
 call that tool at all:
 
-| The server | What Vetit will do |
-| ---------- | ------------------ |
-| Yours | Everything, probing included |
+| The server                                                   | What Vetit will do                                                                                         |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Yours                                                        | Everything, probing included                                                                               |
 | A service you hold an account with, and are about to connect | Everything — one deliberate call with synthetic arguments is less than the use you are about to make of it |
-| An endpoint you have no relationship with | Static review only, and the report says behavioural verification was **NOT PERFORMED** |
+| An endpoint you have no relationship with                    | Static review only, and the report says behavioural verification was **NOT PERFORMED**                     |
 
 That last row is the tool working, not failing. A review that omits its gaps
 reads as a pass, so Vetit names them instead.
