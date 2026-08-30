@@ -111,7 +111,7 @@ Then ask the agent:
 
 > review the MCP server at http://127.0.0.1:8931/mcp
 
-Or drive the tools directly:
+Or run the tools directly:
 
 ```bash
 npx vetit-mcp                       # the review server, port 8930

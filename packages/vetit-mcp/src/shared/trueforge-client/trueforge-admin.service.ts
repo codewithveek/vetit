@@ -2,6 +2,7 @@ import {
   buildTrueforgeHeaders,
   resolveTrueforgeEndpoint,
 } from './trueforge.config.js';
+import { normaliseUrl } from '../url/index.js';
 import {
   agentResponseSchema,
   connectorResponseSchema,
@@ -140,10 +141,46 @@ function buildConnectorManifest(
 }
 
 /**
- * Registering is a create, and a create fails on a name already taken. A
- * review being re-run is normal, so a conflict upgrades to a replace rather
- * than failing the whole quarantine step.
+ * A name already taken is not automatically the same server.
+ *
+ * A connector is global; the permissions that gate it are per-agent. So
+ * replacing a connector on a name conflict — which is what a re-run looks like
+ * — could point an existing, *enabled* connector at a new URL and new
+ * credentials on every other agent using it, while quarantining only the agent
+ * named here. The hold would look applied and the tools would keep being
+ * callable, now against somewhere else. Quarantine defeated by the step meant
+ * to establish it.
+ *
+ * So a conflict is resolved by reading rather than writing: same endpoint means
+ * this really is the re-run it looks like, and anything else is refused.
  */
+async function resolveConflict(
+  registration: QuarantineRegistration,
+): Promise<ConfiguredConnector> {
+  const existing = await readConnector(registration.name);
+  if (normaliseUrl(existing.manifest.url) !== normaliseUrl(registration.url)) {
+    throw new TrueforgeRequestError(
+      CONFLICT_STATUS,
+      `A connector named ${registration.name} already exists and points at ` +
+        `${existing.manifest.url}, not ${registration.url}. Replacing it would ` +
+        'retarget every agent already using that name — including agents this ' +
+        'review is not quarantining — so it is refused. Register this target ' +
+        'under a different name, or take the existing connector out of service ' +
+        'deliberately first.',
+    );
+  }
+  // Same endpoint. With no new credential there is nothing to write, so the
+  // quieter path is to leave it alone; a supplied credential is an explicit
+  // request to set or rotate one, and the URL is unchanged either way.
+  if (registration.auth === undefined) return existing;
+  const raw = await callTrueforge({
+    path: CONNECTORS_PATH,
+    method: 'PUT',
+    body: { manifest: buildConnectorManifest(registration) },
+  });
+  return connectorResponseSchema.parse(raw).data;
+}
+
 export async function registerQuarantinedServer(
   registration: QuarantineRegistration,
 ): Promise<ConfiguredConnector> {
@@ -155,8 +192,7 @@ export async function registerQuarantinedServer(
     if (!(error instanceof TrueforgeRequestError) || error.status !== CONFLICT_STATUS) {
       throw error;
     }
-    const raw = await callTrueforge({ path: CONNECTORS_PATH, method: 'PUT', body });
-    return connectorResponseSchema.parse(raw).data;
+    return await resolveConflict(registration);
   }
 }
 
@@ -222,13 +258,13 @@ function replaceServerEntry(
  * server block would delete the model, the instructions and the skills along
  * with it. Everything else is carried through untouched.
  */
-export async function writeAgentServerEntry(
-  update: AgentServerEntryUpdate,
+async function putServerEntry(
+  agent: TrueforgeAgent,
+  entry: AgentServerEntry,
 ): Promise<TrueforgeAgent> {
-  const agent = await findAgentByName(update.agentName);
   const manifest = {
     ...agent.manifest,
-    mcp_servers: [...replaceServerEntry(agent, update.entry)],
+    mcp_servers: [...replaceServerEntry(agent, entry)],
   };
   const raw = await callTrueforge({
     path: `${AGENTS_PATH}/${encodeURIComponent(agent.id)}`,
@@ -236,4 +272,65 @@ export async function writeAgentServerEntry(
     body: { manifest },
   });
   return agentResponseSchema.parse(raw).data;
+}
+
+/** Two writers in one process is the likely case, and it can be removed. */
+const agentWritesInFlight = new Map<string, Promise<unknown>>();
+
+const MAX_REBASE_ATTEMPTS = 3;
+
+/**
+ * The manifest we are about to overwrite must be the one we based the edit on.
+ *
+ * The API has no conditional update: no ETag, no If-Match, no per-entry
+ * endpoint, only a whole-manifest PUT. So a read-modify-write can silently
+ * drop whatever landed in between — another admission's grant, or a change to
+ * the model, the instructions or the skills that has nothing to do with us.
+ *
+ * Two things narrow that, and it is worth being exact about which:
+ *
+ *  - writes for one agent are serialised in this process, which removes the
+ *    case that actually happens: two tools in a single review interleaving
+ *  - before writing, the agent is read again and compared with the snapshot
+ *    the edit was built on. If it moved, the edit is rebuilt on the newer one
+ *    and retried, so a concurrent change is preserved rather than clobbered
+ *
+ * What remains is the gap between that last read and the PUT, which cannot be
+ * closed from the client. It is small, it is not zero, and saying so is better
+ * than implying this is atomic.
+ */
+async function writeWithRebase(
+  update: AgentServerEntryUpdate,
+): Promise<TrueforgeAgent> {
+  let snapshot = await findAgentByName(update.agentName);
+  for (let attempt = 1; attempt <= MAX_REBASE_ATTEMPTS; attempt += 1) {
+    const current = await findAgentByName(update.agentName);
+    if (JSON.stringify(current.manifest) === JSON.stringify(snapshot.manifest)) {
+      return await putServerEntry(current, update.entry);
+    }
+    snapshot = current;
+  }
+  throw new TrueforgeRequestError(
+    409,
+    `Agent ${update.agentName} is being changed by something else — it moved ` +
+      `under this update ${String(MAX_REBASE_ATTEMPTS)} times running. ` +
+      'Refusing to overwrite newer state with an older manifest. Try again ' +
+      'once the other change has settled.',
+  );
+}
+
+export async function writeAgentServerEntry(
+  update: AgentServerEntryUpdate,
+): Promise<TrueforgeAgent> {
+  const previous = agentWritesInFlight.get(update.agentName);
+  const run = (async () => {
+    // A failed write must not cancel the one queued behind it.
+    if (previous !== undefined) await previous;
+    return await writeWithRebase(update);
+  })();
+  // The tail is stored already-settled so the next writer only waits for the
+  // turn, never inherits the failure. Keyed by agent name, so the map holds
+  // one entry per agent rather than one per call.
+  agentWritesInFlight.set(update.agentName, run.catch(() => undefined));
+  return await run;
 }
