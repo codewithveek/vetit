@@ -81,8 +81,7 @@ cp .env.example .env
 npm run setup       # builds, starts both servers, registers everything
 ```
 
-`npm run setup` is a Node script — no bash, no Git Bash, same on Windows,
-macOS and Linux. Credentials go in `.env`, which is gitignored; every value in
+`npm run setup` is a Node script, Credentials go in `.env`, which is gitignored; every value in
 it has a working default, so an empty file still starts both servers. Set
 `START_TRUEFORGE=true` to have it fetch and start TrueForge too.
 
@@ -91,9 +90,7 @@ port, it says so and stops rather than registering a server it cannot vouch
 for.
 
 Setup degrades cleanly if you have no TrueForge instance running — the servers
-still start and the tests still pass. (`scripts/setup.sh` is kept because the
-spec names that path; it execs the Node script, so there is one implementation
-rather than two that drift.)
+still start and the tests still pass.
 
 **What TrueForge needs first.** Creating the agent fails without two things
 configured in TrueForge settings, and the script prints which one is missing
