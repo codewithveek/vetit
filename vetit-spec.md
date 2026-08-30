@@ -283,7 +283,7 @@ Each detector is a small function: text in, findings out. `(text: string, contex
 | D-06 | `embeddedUrls`        | medium   | URLs in descriptions (places stolen data could be sent)                                                        |
 | D-07 | `exfilParams`         | high     | Free-text parameters the description never mentions                                                            |
 | D-08 | `annotationGaps`      | medium   | Missing `readOnlyHint` / `destructiveHint`                                                                     |
-| D-09 | `crossServerRefs`     | critical | References to other servers' tool names                                                                        |
+| D-09 | `crossServerRefs`     | critical / medium | References to other servers' tool names. Critical when the text also points the model at the name, or when the name is a tool installed here; medium for a bare name. Documented `key:value` query syntax is not a reference |
 | D-10 | `descriptionLength`   | low      | Unusually long descriptions — room to hide something                                                           |
 
 **Finding shape:**

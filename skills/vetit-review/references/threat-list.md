@@ -84,6 +84,12 @@ the others down with it 72.4% of the time.
 tool already enabled in this workspace, appearing in a description. A tool
 naming *itself* is not this finding.
 
+Critical needs the redirection, not just the name — a description that names
+`filesystem.read` and tells the model to use it, or that names a tool you
+actually have. A name with nothing pointing at it is medium: worth checking,
+not worth rejecting a server over. Documented query syntax like
+`category:people` is not a reference at all.
+
 ---
 
 ## Homoglyph impersonation
