@@ -1,0 +1,7 @@
+type: agent-skill
+name: vetit-review
+ml_repo: default
+metadata: {}
+source:
+  type: local
+  skill_dir: ./vetit-review
