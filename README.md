@@ -76,12 +76,24 @@ Requires **Node 22.5 or later**.
 git clone https://github.com/codewithveek/vetit
 cd vetit
 npm install
-npm test            # 468 tests, including end-to-end against the decoy
-./scripts/setup.sh  # builds, starts both servers, registers the skill, creates the agent
+npm test            # the full suite, including end-to-end against the decoy
+cp .env.example .env
+npm run setup       # builds, starts both servers, registers everything
 ```
 
-`setup.sh` degrades cleanly if you have no TrueForge instance running — the
-servers still start and the tests still pass.
+`npm run setup` is a Node script — no bash, no Git Bash, same on Windows,
+macOS and Linux. Credentials go in `.env`, which is gitignored; every value in
+it has a working default, so an empty file still starts both servers. Set
+`START_TRUEFORGE=true` to have it fetch and start TrueForge too.
+
+It refuses to adopt a server it did not start: if something already holds a
+port, it says so and stops rather than registering a server it cannot vouch
+for.
+
+Setup degrades cleanly if you have no TrueForge instance running — the servers
+still start and the tests still pass. (`scripts/setup.sh` is kept because the
+spec names that path; it execs the Node script, so there is one implementation
+rather than two that drift.)
 
 **What TrueForge needs first.** Creating the agent fails without two things
 configured in TrueForge settings, and the script prints which one is missing
@@ -211,13 +223,14 @@ string that _started with_ the clean-snippet prefix, so attacker-controlled
 text could forge the prefix and skip cleaning entirely. Prefix-trust was
 replaced with invariant checking.
 
-**The one dismissed, and why.** On #5 Qodo reported that `check_shadowing`'s
-installed-tool list defaulted to empty, silently disabling D-09's signal as a
-real bug and advised defaulting to the manifest's own tool names. That fix
-would have been worse than the bug: D-09 exists to catch a server naming tools
-belonging to _other_ servers, so defaulting to its own tools would have caused a "call
-`list_spaces` first" — which honest servers write constantly, The argument are now required instead, with no
-default at all, and the reasoning is pinned in
+**The one dismissed, and why.** On #5 Qodo reported a real bug — `check_shadowing`'s
+installed-tool list defaulted to empty, silently disabling D-09's signal — and
+advised defaulting to the manifest's own tool names. That fix would have been
+worse than the bug: D-09 exists to catch a server naming tools belonging to
+_other_ servers, so defaulting to its own would turn "call `list_spaces` first"
+— which honest servers write constantly — into a critical finding worth 40 risk
+points. The argument is required instead, with no default at all, and the
+reasoning is pinned in
 [`run-detectors.ts`](packages/vetit-mcp/src/features/detection/run-detectors.ts)
 next to the code.
 

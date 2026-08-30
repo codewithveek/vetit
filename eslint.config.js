@@ -78,6 +78,20 @@ export default tseslint.config(
     // Config files are plain JavaScript and sit outside the typed project.
     files: ['**/*.js'],
     extends: [js.configs.recommended, tseslint.configs.disableTypeChecked],
-    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
+    // The setup script is Node reaching for Node: fetch and timers are
+    // globals there, not imports.
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        clearTimeout: 'readonly',
+        URL: 'readonly',
+      },
+    },
   },
 );
