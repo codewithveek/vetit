@@ -85,10 +85,6 @@ npm run setup       # builds, starts both servers, registers everything
 it has a working default, so an empty file still starts both servers. Set
 `START_TRUEFORGE=true` to have it fetch and start TrueForge too.
 
-It refuses to adopt a server it did not start: if something already holds a
-port, it says so and stops rather than registering a server it cannot vouch
-for.
-
 Setup degrades cleanly if you have no TrueForge instance running — the servers
 still start and the tests still pass.
 
@@ -104,7 +100,7 @@ rather than announcing success:
 
 Set `EXA_API_KEY` before running to enable the advisory cross-check. Without
 it the agent is created without the `exa` connector and every other pass still
-runs — a review with a gap it reports, rather than a setup that will not
+runs a review with a gap it reports, rather than a setup that will not
 start.
 
 Then ask the agent:
