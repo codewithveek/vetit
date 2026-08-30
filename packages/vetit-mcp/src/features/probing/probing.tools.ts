@@ -247,7 +247,8 @@ export function registerProbingTools(server: McpServer): void {
         'with what it claims. Records the response, the state before and ' +
         'after, and any outgoing request it makes to a tripwire collector. ' +
         'This changes things on the target and is rate limited to one call ' +
-        'per tool per run. Only point it at a server you own.',
+        'per tool per run. Point it only at a server you are entitled to ' +
+        'call: your own, or a service you hold an account with.',
       inputSchema: probeInput,
       annotations: {
         readOnlyHint: false,

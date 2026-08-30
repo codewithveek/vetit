@@ -1,12 +1,11 @@
 export {
+  findAgentByName,
   listConnectorTools,
   readConnector,
   registerQuarantinedServer,
   TrueforgeRequestError,
-  updateAgentServerBlock,
-  writeConnectorPermissions,
-  type AgentServerBlockUpdate,
-  type ConnectorPermissions,
+  writeAgentServerEntry,
+  type AgentServerEntryUpdate,
   type QuarantineRegistration,
 } from './trueforge-admin.service.js';
 export {
@@ -14,6 +13,8 @@ export {
   type TrueforgeEndpoint,
 } from './trueforge.config.js';
 export type {
-  McpServerRecord,
+  AgentServerEntry,
+  ConfiguredConnector,
   McpServerTool,
+  TrueforgeAgent,
 } from './trueforge.schema.js';

@@ -1,6 +1,7 @@
 import { DETECTORS } from '../detection/index.js';
 import type { StoredManifest } from '../manifest/index.js';
 import { readConnector } from '../../shared/trueforge-client/index.js';
+import { normaliseUrl } from '../../shared/url/index.js';
 
 /**
  * The checks that stand between a review and a real permission change.
@@ -67,29 +68,12 @@ async function findWrongConnectorReason(
           'to another.';
   }
 
-  const record = await readConnector(check.connectorName);
-  if (record.url === undefined) {
-    return (
-      `Connector ${check.connectorName} does not report a URL, so there is no ` +
-      'way to confirm it is the server this manifest was fetched from. Fetch ' +
-      'the manifest through the connector and review that instead.'
-    );
-  }
-  return normaliseUrl(record.url) === normaliseUrl(source.url)
+  const connector = await readConnector(check.connectorName);
+  return normaliseUrl(connector.manifest.url) === normaliseUrl(source.url)
     ? undefined
     : `Connector ${check.connectorName} points at a different endpoint from ` +
         'the one this manifest was fetched from. Refusing to apply a review of ' +
         'one server to another.';
-}
-
-/** Enough to catch a trailing slash or a case difference in the host. */
-function normaliseUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
-  } catch {
-    return value.trim().toLowerCase();
-  }
 }
 
 export async function findReasonToRefuse(

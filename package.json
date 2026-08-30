@@ -4,9 +4,14 @@
   "type": "module",
   "description": "Code review, but for the tools you are about to let an agent use.",
   "license": "MIT",
-  "engines": { "node": ">=22.5.0" },
-  "workspaces": ["packages/*"],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
+    "setup": "node scripts/setup.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",

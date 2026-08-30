@@ -3,19 +3,28 @@
 `vetit-agent.json` is the manifest. Two registrations have to happen, in this
 order.
 
+Both need TrueForge to have a **model provider** and a **sandbox provider**
+configured first. Skills are materialised in a sandbox, so an agent naming one
+is rejected outright without it — on macOS and Linux a local sandbox is used
+automatically, and Windows has no local provider and needs one registered.
+
 **First the skill.** The manifest's `skills` block says `{"name":
 "vetit-review"}` and nothing more — that is a *reference*. Until the skill is
-registered from git, the name resolves to nothing and the agent is created
-without the playbook that tells it how to run a review.
+registered from git, that name resolves to nothing and agent creation fails.
 
 ```bash
 curl -X POST http://localhost:8790/api/v1/settings/skills \
   -H 'content-type: application/json' \
-  -d '{"name":"vetit-review",
-       "repository_url":"https://github.com/<you>/vetit",
-       "path":"skills/vetit-review",
-       "ref":"main"}'
+  -d '{"manifest":{"type":"git",
+                   "name":"vetit-review",
+                   "url":"https://github.com/<you>/vetit",
+                   "path":"skills/vetit-review",
+                   "ref":"main",
+                   "description":"Review an MCP server before it is trusted."}}'
 ```
+
+Every settings write is wrapped in `manifest`, and the schema is closed: an
+unrecognised key is a 400, not an ignored field.
 
 **Then the agent.**
 

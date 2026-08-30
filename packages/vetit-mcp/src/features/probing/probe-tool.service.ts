@@ -69,15 +69,10 @@ function summariseResponse(raw: unknown): { text: string; isError: boolean } {
 export async function resolveProbeTarget(manifest: StoredManifest): Promise<string> {
   const { source } = manifest;
   if (source.kind === 'direct') return source.url;
-  const record = await readConnector(source.connectorName);
-  if (record.url === undefined) {
-    throw new ProbeRefusedError(
-      `Connector ${source.connectorName} does not report a URL, so there is no ` +
-        'endpoint this manifest can be said to authorise. Fetch the target ' +
-        'directly and probe that manifest instead.',
-    );
-  }
-  return record.url;
+  // A connector's endpoint lives on its manifest, and the harness requires it
+  // there — so an absent url is a malformed response, not a configuration to
+  // reason about, and the schema rejects it before this line.
+  return (await readConnector(source.connectorName)).manifest.url;
 }
 
 function assertUrlMatchesManifest(target: string, supplied: string | undefined): void {
