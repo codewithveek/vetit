@@ -2,10 +2,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { buildGuardedToolResult } from '../../shared/redaction/index.js';
 import { readStoredManifest, resolveManifestPath } from '../manifest/index.js';
+import { DETECTORS } from './detectors/index.js';
 import {
   FindingsStorageError,
   mergeStoredFindings,
   readStoredFindings,
+  readScanCoverage,
 } from './findings-store.service.js';
 import { computeRisk } from './risk-score.js';
 import { runDetectors } from './run-detectors.js';
@@ -261,15 +263,60 @@ function registerComputeRisk(server: McpServer): void {
         counts: assessment.counts,
         finding_count: assessment.findingCount,
         working_out: assessment.workingOut,
-        note:
-          findings.length === 0
-            ? 'No findings are recorded for this manifest. Run the scanning ' +
-              'tools first — a score of zero here means nothing was checked, ' +
-              'not that nothing was found.'
-            : 'Score computed from the stored findings for this manifest.',
+        note: describeScore({
+          findingCount: findings.length,
+          detectorsRun: (await readScanCoverage(manifest_id)).detectorsRun,
+        }),
       });
     },
   );
+}
+
+interface ScoreContext {
+  readonly findingCount: number;
+  readonly detectorsRun: readonly string[];
+}
+
+/**
+ * What a zero means, which is two opposite things.
+ *
+ * A count alone cannot tell "nothing was found" from "nothing was looked for",
+ * and this used to answer both with the second: a server that passed all ten
+ * detectors cleanly was told its score meant nothing had been checked. That is
+ * the same confusion `write_admission` refuses on, and the coverage record
+ * that settles it there was already being written here — it just was not being
+ * read.
+ *
+ * Getting this backwards is worse than a wrong number. It teaches a reader to
+ * disbelieve a clean result, which is how a real pass gets re-run until
+ * something turns up.
+ */
+function describeScore(context: ScoreContext): string {
+  const missing = DETECTORS.map((definition) => definition.id).filter(
+    (id) => !context.detectorsRun.includes(id),
+  );
+  if (missing.length === DETECTORS.length) {
+    return (
+      'Nothing has been checked. No detector has run against this manifest, ' +
+      'so this zero is the absence of a review rather than the result of one. ' +
+      'Run scan_descriptions, analyze_schemas, check_annotations and ' +
+      'check_shadowing.'
+    );
+  }
+  if (missing.length > 0) {
+    return (
+      `Partial review: ${missing.join(', ')} never ran. This score covers ` +
+      'only the detectors that did, and says nothing about the rest.'
+    );
+  }
+  if (context.findingCount === 0) {
+    return (
+      'All ten detectors ran and found nothing. This is a clean result rather ' +
+      'than an unchecked one — though a static review cannot see behaviour, ' +
+      'so probe anything whose annotations matter to you.'
+    );
+  }
+  return 'Score computed from the stored findings for this manifest.';
 }
 
 function registerLookupAdvisories(server: McpServer): void {

@@ -22,6 +22,7 @@ let decoyServer: Server;
 let vetitServer: Server;
 let client: Client;
 let decoyUrl: string;
+let vetitUrl: string;
 let workdir: string;
 let previousWorkdir: string | undefined;
 
@@ -57,6 +58,8 @@ beforeAll(async () => {
   decoyServer = await listen(createDecoyApp({ isPoisoned: false }));
   vetitServer = await listen(createVetitApp());
   decoyUrl = urlFor(decoyServer);
+  // Vetit's own surface, so a review of an honest server has a real subject.
+  vetitUrl = urlFor(vetitServer);
 
   client = new Client({ name: 'review-pipeline-test', version: '0.1.0' });
   await client.connect(new StreamableClientTransport(new URL(urlFor(vetitServer))));
@@ -246,7 +249,53 @@ describe('the review, end to end', () => {
     const noteSchema = z.object({ score: z.number(), note: z.string() });
     const risk = noteSchema.parse(await callVetit('compute_risk', { manifest_id }));
     expect(risk.score).toBe(0);
-    expect(risk.note).toContain('nothing was checked');
+    expect(risk.note).toContain('Nothing has been checked');
+  });
+
+  it('names the detectors still missing rather than scoring as if complete', async () => {
+    const idSchema = z.object({ manifest_id: z.string() });
+    const { manifest_id } = idSchema.parse(
+      await callVetit('fetch_manifest', { url: decoyUrl }),
+    );
+    await callVetit('scan_descriptions', { manifest_id });
+    const noteSchema = z.object({ note: z.string() });
+    const risk = noteSchema.parse(await callVetit('compute_risk', { manifest_id }));
+    expect(risk.note).toContain('Partial review');
+    expect(risk.note).toContain('D-07');
+  });
+});
+
+/**
+ * The other half of the zero, and the half that was wrong.
+ *
+ * A count on its own cannot tell "nothing was found" from "nothing was looked
+ * for", and compute_risk used to answer both with the second — telling a
+ * reader that a server which passed all ten detectors had not been checked.
+ * Vetit's own manifest is the honest server on hand to prove otherwise.
+ */
+describe('a genuinely clean server', () => {
+  it('is called clean, not unchecked', async () => {
+    const idSchema = z.object({ manifest_id: z.string() });
+    const { manifest_id } = idSchema.parse(
+      await callVetit('fetch_manifest', { url: vetitUrl }),
+    );
+    await callVetit('scan_descriptions', { manifest_id });
+    await callVetit('analyze_schemas', { manifest_id });
+    await callVetit('check_annotations', { manifest_id });
+    await callVetit('check_shadowing', { manifest_id, installed_tool_names: [] });
+
+    const riskSchema = z.object({
+      score: z.number(),
+      band: z.string(),
+      finding_count: z.number(),
+      note: z.string(),
+    });
+    const risk = riskSchema.parse(await callVetit('compute_risk', { manifest_id }));
+    expect(risk.finding_count).toBe(0);
+    expect(risk.score).toBe(0);
+    expect(risk.band).toBe('admit_full_eligible');
+    expect(risk.note).toContain('found nothing');
+    expect(risk.note).not.toContain('Nothing has been checked');
   });
 });
 
