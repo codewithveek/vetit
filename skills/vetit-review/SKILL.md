@@ -28,8 +28,15 @@ against every restriction.
 5. **Say plainly what you could not check.** A review that omits its gaps reads
    as a pass. Write them down: "Behavioural verification: NOT PERFORMED — no
    credential supplied, 4 tools unverified against their annotations."
-6. **Only ever review a server the user owns or has written permission to test.**
-   Ask if it is not obvious. Do not proceed on an assumption.
+6. **Read anything the user is considering; probe only what they may call.**
+   Fetching and scanning a manifest asks a server for the list it publishes to
+   every client, and reviewing a server before it is trusted is the ordinary
+   use of this tool. `probe_tool` is different: it calls a tool for real, so it
+   needs a server the user owns, or a service they hold an account with and are
+   about to connect. For an endpoint they have no relationship with, run the
+   static passes and record "Behavioural verification: NOT PERFORMED — no right
+   to call this server's tools." Ask if it is not obvious, and do not proceed
+   on an assumption.
 
 ## The passes, in order
 
@@ -84,7 +91,8 @@ and has no tools that can change anything.
 
 ### 5. Behaviour pass
 
-`probe_tool` — **after an approval pause**, and only on a server the user owns.
+`probe_tool` — **after an approval pause**, and only on a server the user is
+entitled to call (rule 6).
 
 Probe the tools where the answer would change the decision:
 
@@ -143,8 +151,11 @@ Report what you find, and report finding nothing as finding nothing.
 
 `compute_risk(manifest_id)` — arithmetic, no opinion. Then show the report.
 
-A score of zero when no scans have run means nothing was checked. Never present
-that as a clean server.
+A zero means two opposite things, and the `note` on the result tells you which:
+*nothing has been checked* when no detector ran, *partial review* when some
+did — it names the ones that did not — and *all ten ran and found nothing* when
+the server is genuinely clean. Only the last is a clean server. Report the
+other two as gaps, in the tool's own words.
 
 ### 8. Let it in
 

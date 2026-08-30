@@ -61,8 +61,10 @@ access should it get?**
   already done well by `mcp-airlock`, MCP-Gateway and ToolHive. Staying out of
   it is a choice.
 - **Not another description scanner.** See the table above.
-- **Not an attack tool.** It reviews servers you own, or ones you have written
-  permission to check.
+- **Not an attack tool.** Reading a manifest is what every MCP client does on
+  connect, so reviewing a server before you add it needs no more permission
+  than using it would. Probing is the exception — it calls a tool for real, so
+  it is for servers you are entitled to call.
 
 ---
 
@@ -311,7 +313,8 @@ run, and the gap is reported as **what was not covered, never as a pass**.
 - **Probing a hostile server can change something on its side.** It is kept
   small — read-only tools by default, synthetic arguments, one call per tool
   per run enforced in code, and an approval pause nobody can skip — but it is
-  not zero. Only point Vetit at servers you own.
+  not zero. Probing also tells a malicious server that you exist, and hands it
+  one opportunity to act. Only probe servers you are entitled to call.
 - **A clean review is not a guarantee.** It means the checks that ran found
   nothing. Behaviour is only verified for tools that were actually probed, and
   the report names the rest.
@@ -341,8 +344,27 @@ run, and the gap is reported as **what was not covered, never as a pass**.
 
 ## Scope
 
-Vetit is a **defensive** tool. Do not point it at systems you do not own or
-have written permission to test.
+Vetit is a **defensive** tool, and it draws the line in two places rather than
+one.
+
+**Reading** a server — `fetch_manifest` and the five static passes — asks it
+for the tool list it publishes to every client that connects. That is the
+normal handshake, and reviewing a server you are considering needs no more
+permission than using it would.
+
+**Probing** — `probe_tool` — calls a tool for real, so it needs the right to
+call that tool at all:
+
+| The server | What Vetit will do |
+| ---------- | ------------------ |
+| Yours | Everything, probing included |
+| A service you hold an account with, and are about to connect | Everything — one deliberate call with synthetic arguments is less than the use you are about to make of it |
+| An endpoint you have no relationship with | Static review only, and the report says behavioural verification was **NOT PERFORMED** |
+
+That last row is the tool working, not failing. A review that omits its gaps
+reads as a pass, so Vetit names them instead.
+
+Do not point `probe_tool` at systems you have no right to call.
 
 Every test and every demonstration in this repository targets
 [`vetit-decoy-mcp`](packages/vetit-decoy-mcp) — a server we wrote to be unsafe
